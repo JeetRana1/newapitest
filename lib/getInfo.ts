@@ -21,8 +21,8 @@ export default async function getInfo(id: string) {
         "Sec-Fetch-Site": "none",
         "Sec-Fetch-User": "?1",
         "Upgrade-Insecure-Requests": "1",
-        Origin: "https://allmovieland.fun/",
-        Referer: "https://google.com",
+        Origin: "https://allmovieland.io/",
+        Referer: "https://allmovieland.io/",
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
       },
@@ -74,10 +74,10 @@ export default async function getInfo(id: string) {
       },
     };
   } catch (error: any) {
-    console.log(error?.message || error);
+    console.error("Error in getInfo:", error?.message || error);
     return {
       success: false,
-      message: error?.message || "Something went wrong",
+      message: `API Error: ${error?.message || "Something went wrong"}`,
     };
   }
 }
