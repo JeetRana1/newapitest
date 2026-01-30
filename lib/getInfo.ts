@@ -77,7 +77,7 @@ export default async function getInfo(id: string) {
     console.log(error?.message || error);
     return {
       success: false,
-      message: "Something went wrong",
+      message: error?.message || "Something went wrong",
     };
   }
 }
