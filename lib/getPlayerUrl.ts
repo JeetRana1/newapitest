@@ -1,60 +1,60 @@
 import axios from "axios";
 
 export async function getPlayerUrl() {
-  let baseUrl = process.env.BASE_URL?.trim();
-  if (!baseUrl) {
-    throw new Error("BASE_URL environment variable is not set");
-  }
+  let baseUrl = (process.env.BASE_URL || 'https://allmovieland.link/player.js').trim();
 
-  // Handle potential Vercel double-encoding or special character issues
-  // If the user pasted with spaces or %20, let's normalize it
+  // Normalize spaces/encoding
   baseUrl = baseUrl.replace(/%2520/g, " ").replace(/%20/g, " ");
 
   const tryFetch = async (url: string) => {
     try {
-      console.log(`Attempting to fetch player domain from: ${url}`);
       const res = await axios.get(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Accept': '*/*',
-          'Referer': new URL(url).origin
+          'Referer': 'https://google.com'
         },
-        timeout: 8000
+        timeout: 10000
       });
       const resText = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
       const playerUrlMatch = resText.match(/const AwsIndStreamDomain\s*=\s*'([^']+)'/);
-      return playerUrlMatch ? playerUrlMatch[1] : null;
+
+      if (playerUrlMatch && playerUrlMatch[1]) {
+        const domain = playerUrlMatch[1];
+        // Validate domain format and ensure it's not a known dead one
+        if (domain.startsWith('http') && !domain.includes('protection-episode-i-222.site')) {
+          return domain.endsWith('/') ? domain.slice(0, -1) : domain;
+        }
+      }
+      return null;
     } catch (e: any) {
-      console.error(`Fetch failed for ${url}: ${e.message}`);
       return null;
     }
   };
 
-  // Try the provided URL (normalized)
+  // 1. Try provided BASE_URL
   let playerUrl = await tryFetch(baseUrl);
 
-  // Fallback 1: If it has query params, try without them
-  if (!playerUrl && baseUrl.includes('?')) {
-    playerUrl = await tryFetch(baseUrl.split('?')[0]);
+  // 2. Try .link without version
+  if (!playerUrl) {
+    playerUrl = await tryFetch('https://allmovieland.link/player.js');
   }
 
-  // Fallback 2: Try .io if .link is failing
-  if (!playerUrl && baseUrl.includes('allmovieland.link')) {
-    playerUrl = await tryFetch('https://allmovieland.io/player.js');
-  }
-
-  // Fallback 3: Try getting it from a known working movie page if possible
-  // (Optional, but adding a common one as last resort)
+  // 3. Try .io movie page (very reliable as it's the main site)
   if (!playerUrl) {
     playerUrl = await tryFetch('https://allmovieland.io/8183-special-ops.html');
   }
 
+  // 4. Try .io player.js directly
   if (!playerUrl) {
-    throw new Error(`Could not find player URL from any source. Check if the domains are blocked.`);
+    playerUrl = await tryFetch('https://allmovieland.io/player.js');
   }
 
-  // Ensure no trailing slash for consistency in getInfo.ts
-  const cleanUrl = playerUrl.endsWith('/') ? playerUrl.slice(0, -1) : playerUrl;
-  console.log(`Found working player domain: ${cleanUrl}`);
-  return cleanUrl;
+  // 5. Hardcoded fallback (as a last resort if all scraping fails)
+  if (!playerUrl) {
+    playerUrl = 'https://vekna402las.com';
+  }
+
+  console.log(`Resolved Player URL: ${playerUrl}`);
+  return playerUrl;
 }
