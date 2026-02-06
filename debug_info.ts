@@ -77,7 +77,7 @@ async function debugGetInfo(id: string) {
         console.error("Error parsing JSON:", parseError);
       }
     }
-  } catch (error) {
+  } catch (error: any) {
     console.error("Debug error:", error.message);
   }
 }
