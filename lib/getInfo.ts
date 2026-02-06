@@ -45,17 +45,16 @@ export default async function getInfo(id: string) {
             headers,
             httpAgent: torAgent,
             httpsAgent: torAgent,
-            timeout: 10000,
+            timeout: 12000,
             validateStatus: (s) => s === 200
           });
 
-          const $ = cheerio.load(response.data);
-          let scriptContent = "";
-          $("script").each((_, el) => { scriptContent += $(el).html() + "\n"; });
+          // Scan the entire HTML for the streaming keys
+          const html = response.data.toString();
 
-          // The provider often uses 'file', 'link', or 'source' in a script tag
-          const fileMatch = scriptContent.match(/["']?(?:file|link|source|src)["']?\s*[:=]\s*["']([^"']+)["']/i);
-          const keyMatch = scriptContent.match(/["']?(?:key)["']?\s*[:=]\s*["']([^"']+)["']/i);
+          // Pattern-match for the stream source and CSRF token (scans whole HTML)
+          const fileMatch = html.match(/["']?(?:file|link|source|src|url)["']?\s*[:=]\s*["']([^"']+)["']/i);
+          const keyMatch = html.match(/["']?(?:key|token|csrf)["']?\s*[:=]\s*["']([^"']+)["']/i);
 
           if (fileMatch && keyMatch) {
             let file = fileMatch[1].replace(/\\\//g, "/");
