@@ -43,13 +43,8 @@ export default async function proxy(req: Request, res: Response) {
     if (!targetUrl) return res.status(400).send("Proxy Error: No URL");
 
     try {
-        // 1. Extract and Strip the Referer Hint (proxy_ref)
-        const urlObj = new URL(targetUrl);
-        const proxyRef = urlObj.searchParams.get('proxy_ref');
-
-        // Remove the helper param before fetching
-        urlObj.searchParams.delete('proxy_ref');
-        targetUrl = urlObj.toString();
+        // 1. Extract the Referer Hint (passed from getStream or recursive HLS)
+        const proxyRef = req.query.proxy_ref as string;
 
         // 2. Identify file types and generate smart headers
         const isM3U8 = targetUrl.includes('.m3u8') || targetUrl.includes('.txt');

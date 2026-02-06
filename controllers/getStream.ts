@@ -13,22 +13,30 @@ export default async function getStream(req: Request, res: Response) {
 
   try {
     let finalStreamUrl = "";
+    let token = file;
+    let proxyRef = "";
 
-    // 1. Logic Switch: Is this a direct URL or a token?
-    if (file.startsWith('http')) {
+    // 1. Manually parse token and proxy_ref (new URL() is unsafe for base64 tokens)
+    if (file.includes('proxy_ref=')) {
+      const parts = file.split('?');
+      token = parts[0];
+      if (parts[1]) {
+        const searchParams = new URLSearchParams(parts[1]);
+        proxyRef = searchParams.get('proxy_ref') || "";
+      }
+    }
+
+    // 2. Logic Switch: Is this a direct URL or a token?
+    if (token.startsWith('http')) {
       console.log(`[getStream] Detected direct URL. Proxying...`);
-      finalStreamUrl = file;
+      finalStreamUrl = token;
     } else {
-      // Old token logic with mirror support
-      const urlObj = new URL(file.includes('http') ? file : `http://localhost?file=${file}`);
-      const proxyRef = urlObj.searchParams.get('proxy_ref');
-      const token = urlObj.searchParams.get('file') || file;
-
-      const baseDomain = proxyRef ? proxyRef.replace(/\/$/, '') : (await getPlayerUrl()).replace(/\/$/, '');
+      // Resolve token from mirror
+      const baseDomain = (proxyRef ? proxyRef : await getPlayerUrl()).replace(/\/$/, '');
       const path = token.startsWith('~') ? token.slice(1) + ".txt" : token + ".txt";
       const playlistUrl = `${baseDomain}/playlist/${path}`;
 
-      console.log(`[getStream] Fetching token from: ${playlistUrl}`);
+      console.log(`[getStream] Fetching token from mirror: ${baseDomain}`);
       const response = await axios.get(playlistUrl, {
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -42,9 +50,10 @@ export default async function getStream(req: Request, res: Response) {
       finalStreamUrl = response.data;
     }
 
-    // 2. Wrap the final link in our CORS Proxy
+    // 3. Wrap the final link in our CORS Proxy
     const host = req.get('host');
-    const proxiedLink = `https://${host}/api/v1/proxy?url=${encodeURIComponent(finalStreamUrl)}`;
+    const proxySuffix = proxyRef ? `&proxy_ref=${encodeURIComponent(proxyRef)}` : "";
+    const proxiedLink = `https://${host}/api/v1/proxy?url=${encodeURIComponent(finalStreamUrl)}${proxySuffix}`;
 
     res.json({
       success: true,
