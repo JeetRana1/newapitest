@@ -3,7 +3,6 @@ import * as cheerio from "cheerio";
 import { getPlayerUrl } from "./getPlayerUrl";
 import { SocksProxyAgent } from 'socks-proxy-agent';
 
-// Tor Proxy Agent (Tor runs on port 9050 by default in the alpine container)
 const torAgent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
 
 export default async function getInfo(id: string) {
@@ -11,7 +10,7 @@ export default async function getInfo(id: string) {
     const playerUrl = await getPlayerUrl();
     const targetUrl = `${playerUrl}/play/${id}`;
 
-    console.log(`[getInfo] Target URL: ${targetUrl}`);
+    console.log(`[getInfo] Fetching via Tor: ${targetUrl}`);
 
     const headers = {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -22,103 +21,71 @@ export default async function getInfo(id: string) {
     };
 
     let response;
-
-    // Attempt with Tor
     try {
-      console.log(`[getInfo] Attempting fetch via Tor...`);
       response = await axios.get(targetUrl, {
         headers,
         httpAgent: torAgent,
         httpsAgent: torAgent,
-        timeout: 25000,
+        timeout: 30000,
         validateStatus: (status) => status < 500
       });
-      console.log(`[getInfo] Tor response status: ${response.status}`);
     } catch (e: any) {
-      console.log(`[getInfo] Tor failed: ${e.message}. Trying direct...`);
-      response = await axios.get(targetUrl, {
-        headers,
-        timeout: 10000,
-        validateStatus: (status) => status < 500
-      });
+      console.log(`[getInfo] Primary mirror failed: ${e.message}`);
+      return { success: false, message: "Mirror connection failed." };
     }
 
-    if (response.status === 404) {
-      console.log(`[getInfo] 404 received. This domain might be blocking cloud/tor IPs.`);
-
-      // FALLBACK: Try a different mirror if the first one failed with 404
-      const fallbackDomains = [
-        "https://allmovieland.net",
-        "https://allmovieland.io",
-        "https://vekna402las.com"
-      ];
-
-      for (const domain of fallbackDomains) {
-        if (targetUrl.startsWith(domain)) continue;
-        const fallbackUrl = `${domain}/play/${id}`;
-        try {
-          console.log(`[getInfo] Trying mirror: ${fallbackUrl}`);
-          response = await axios.get(fallbackUrl, {
-            headers,
-            httpAgent: torAgent,
-            httpsAgent: torAgent,
-            timeout: 15000,
-            validateStatus: (status) => status === 200
-          });
-          if (response.status === 200) break;
-        } catch (err) { continue; }
-      }
+    if (response.status !== 200) {
+      return { success: false, message: `Mirror returned status ${response.status}.` };
     }
 
     const html = response.data;
-    if (typeof html !== 'string' || response.status !== 200) {
-      return { success: false, message: `Status ${response.status}: ISP/Cloud Block Active` };
-    }
-
     const $ = cheerio.load(html);
     const scripts = $("script");
 
+    console.log(`[getInfo] Scanning ${scripts.length} script tags...`);
+
     for (let i = 0; i < scripts.length; i++) {
       const scriptText = $(scripts[i]).html();
-      if (scriptText && (scriptText.includes('file') || scriptText.includes('key'))) {
-        const jsonRegex = /(\{[^{}]*\})/g;
-        let match;
-        while ((match = jsonRegex.exec(scriptText)) !== null) {
-          try {
-            const obj = JSON.parse(match[1]);
-            if (obj.file && obj.key) {
-              const file = obj.file;
-              const key = obj.key;
-              const link = file.startsWith("http") ? file : `${playerUrl.endsWith('/') ? playerUrl.slice(0, -1) : playerUrl}${file}`;
+      if (!scriptText) continue;
 
-              const playlistRes = await axios.get(link, {
-                headers: { ...headers, "X-Csrf-Token": key },
-                httpAgent: torAgent,
-                httpsAgent: torAgent,
-                timeout: 20000
-              });
+      // More robust search for "file" and "key"
+      if (scriptText.includes('"file"') && scriptText.includes('"key"')) {
+        try {
+          // This regex finds values even if the JSON is messy
+          const fileMatch = scriptText.match(/"file"\s*:\s*"([^"]+)"/);
+          const keyMatch = scriptText.match(/"key"\s*:\s*"([^"]+)"/);
 
-              const playlist = Array.isArray(playlistRes.data)
-                ? playlistRes.data.filter((item: any) => item && (item.file || item.folder))
-                : [];
+          if (fileMatch && keyMatch) {
+            const file = fileMatch[1];
+            const key = keyMatch[1];
 
-              return {
-                success: true,
-                data: { playlist, key }
-              };
-            }
-          } catch (e) { continue; }
+            console.log(`[getInfo] Found file and key! Fetching playlist...`);
+
+            const link = file.startsWith("http") ? file : `${playerUrl.replace(/\/$/, '')}${file}`;
+
+            const playlistRes = await axios.get(link, {
+              headers: { ...headers, "X-Csrf-Token": key },
+              httpAgent: torAgent,
+              httpsAgent: torAgent,
+              timeout: 20000
+            });
+
+            const playlist = Array.isArray(playlistRes.data)
+              ? playlistRes.data.filter((item: any) => item && (item.file || item.folder))
+              : [];
+
+            return { success: true, data: { playlist, key } };
+          }
+        } catch (e: any) {
+          console.log(`[getInfo] Parsing error in script: ${e.message}`);
         }
       }
     }
 
-    return { success: false, message: "Stream data script not found on mirror." };
+    return { success: false, message: "Stream links (file/key) not found in page source." };
 
   } catch (error: any) {
     console.error(`Error in getInfo:`, error?.message || error);
-    return {
-      success: false,
-      message: `API Error: ${error?.message || "Something went wrong"}`,
-    };
+    return { success: false, message: `API Error: ${error.message}` };
   }
 }
