@@ -81,20 +81,26 @@ export default async function proxy(req: Request, res: Response) {
 
         let response;
         try {
-            // Priority 1: Tor (Security/Anonymity)
-            response = await tryFetch(true);
-        } catch (e: any) {
-            // Priority 2: Direct Fallback (If Tor is blocked by CDN or 403/404)
-            if (isSegment && (e.response?.status === 403 || e.response?.status === 404 || !e.response)) {
-                console.log(`[Proxy Fallback] Tor failed (${e.response?.status || 'Timeout'}). Trying direct fetch for segment...`);
+            // Priority for segments: Try Direct FIRST for speed, then Tor Fallback
+            // Priority for manifests: Try Tor FIRST for privacy/bypass, then Direct Fallback
+            if (isSegment) {
                 try {
+                    console.log(`[Proxy FastPath] Trying direct fetch for segment: ${targetUrl.substring(0, 80)}...`);
                     response = await tryFetch(false);
-                } catch (fallbackErr: any) {
-                    throw fallbackErr;
+                } catch (e) {
+                    console.log(`[Proxy SlowPath] Direct failed or blocked. Falling back to Tor...`);
+                    response = await tryFetch(true);
                 }
             } else {
-                throw e;
+                try {
+                    response = await tryFetch(true);
+                } catch (e) {
+                    console.log(`[Proxy Fallback] Tor failed for manifest. Trying direct...`);
+                    response = await tryFetch(false);
+                }
             }
+        } catch (finalErr: any) {
+            throw finalErr;
         }
 
         // Set permissive CORS
