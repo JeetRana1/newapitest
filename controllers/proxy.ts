@@ -155,17 +155,17 @@ export default async function proxy(req: Request, res: Response) {
                 const trimmed = line.trim();
                 if (!trimmed) return line;
 
-                // 3a. Handle Quality Variant Manifests (e.g. URI="master.m3u8")
+                // 3a. Handle Quality/Audio Variant Manifests (URI="...")
                 if (trimmed.includes('URI="')) {
                     return trimmed.replace(/URI="([^"]+)"/g, (match, relUrl) => {
                         const absUrl = relUrl.startsWith('http') ? relUrl : new URL(relUrl, baseUrl).href;
-                        // Inject proxy_ref into the sub-manifest URL
                         return `URI="${proxyBase}${encodeURIComponent(absUrl)}${refParam}"`;
                     });
                 }
 
-                // 3b. Handle Fragmented Video Segments (.ts)
-                if (!trimmed.startsWith('#')) {
+                // 3b. Handle Fragmented Video Segments (.ts) or Sub-Manifests
+                // CRITICAL: Filter out garbage lines like "7" or non-file lines
+                if (!trimmed.startsWith('#') && (trimmed.includes('/') || trimmed.includes('.ts') || trimmed.includes('.m3u8') || trimmed.length > 5)) {
                     const absUrl = trimmed.startsWith('http') ? trimmed : new URL(trimmed, baseUrl).href;
                     return `${proxyBase}${encodeURIComponent(absUrl)}${refParam}`;
                 }
