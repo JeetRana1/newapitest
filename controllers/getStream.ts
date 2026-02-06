@@ -27,8 +27,9 @@ export default async function getStream(req: Request, res: Response) {
     }
 
     // 2. Logic Switch: Is this a direct URL or a token?
-    if (token.startsWith('http')) {
-      console.log(`[getStream] Detected direct URL. Proxying...`);
+    // CRITICAL: Check for known external hosts or standard http protocol to bypass token resolution
+    if (token.startsWith('http') || token.includes('lizer123') || token.includes('cdn')) {
+      console.log(`[getStream] Detected direct URL: ${token}. Proxying...`);
       finalStreamUrl = token;
     } else {
       // Resolve token from mirror
