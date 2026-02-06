@@ -142,7 +142,6 @@ export default async function proxy(req: Request, res: Response) {
         if (isM3U8 || (contentType && contentType.includes('mpegurl'))) {
             let content = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
 
-            // If it's not a real M3U8, just send it
             if (!content.includes('#EXTM3U') && !targetUrl.includes('.txt')) {
                 return res.send(content);
             }
@@ -150,24 +149,25 @@ export default async function proxy(req: Request, res: Response) {
             res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
             const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
 
+            // Sustain the referer through the recursive calls
+            const refParam = proxyRef ? `&proxy_ref=${encodeURIComponent(proxyRef)}` : "";
+
             const rewrittenLines = content.split('\n').map(line => {
                 const trimmed = line.trim();
                 if (!trimmed) return line;
 
-                // Handle URI="..." in tags
                 if (trimmed.includes('URI="')) {
                     return trimmed.replace(/URI="([^"]+)"/g, (match, relUrl) => {
                         if (host && relUrl.includes(host)) return match;
                         const absUrl = relUrl.startsWith('http') ? relUrl : new URL(relUrl, baseUrl).href;
-                        return `URI="${proxyBase}${encodeURIComponent(absUrl)}"`;
+                        return `URI="${proxyBase}${encodeURIComponent(absUrl)}${refParam}"`;
                     });
                 }
 
-                // Handle direct URL lines
                 if (!trimmed.startsWith('#')) {
                     if (host && trimmed.includes(host)) return line;
                     const absUrl = trimmed.startsWith('http') ? trimmed : new URL(trimmed, baseUrl).href;
-                    return `${proxyBase}${encodeURIComponent(absUrl)}`;
+                    return `${proxyBase}${encodeURIComponent(absUrl)}${refParam}`;
                 }
 
                 return line;
