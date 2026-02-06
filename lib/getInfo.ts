@@ -13,17 +13,18 @@ export default async function getInfo(id: string) {
       playerUrl,
       "https://vekna402las.com",
       "https://vekna402las.net",
+      "https://allmovieland.io",
       "https://allmovieland.link",
       "https://allmovieland.work",
       "https://allmovieland.site",
-      "https://allmovieland.io",
       "https://allmovieland.tv",
-      "https://allmovieland.net"
+      "https://allmovieland.net",
+      "https://new1.moviesdrive.surf"
     ];
 
     const headers = {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-      "Referer": "https://allmovieland.link/", // Some mirrors are very sensitive to referer
+      "Referer": "https://allmovieland.link/",
       "Origin": "https://allmovieland.link",
       "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
       "Accept-Language": "en-US,en;q=0.9"
@@ -33,33 +34,49 @@ export default async function getInfo(id: string) {
       if (!currentDomain) continue;
       currentDomain = currentDomain.replace(/\/$/, '');
 
-      // Expanded path variants for better TV and Movie coverage
       const paths = [`/play/${id}`, `/v/${id}`, `/movie/${id}`, `/embed/${id}`];
 
       for (const path of paths) {
         const targetUrl = `${currentDomain}${path}`;
         try {
-          console.log(`[getInfo] Checking: ${targetUrl}`);
+          console.log(`[getInfo] Scanning: ${targetUrl}`);
 
           const response = await axios.get(targetUrl, {
             headers,
             httpAgent: torAgent,
             httpsAgent: torAgent,
-            timeout: 12000,
+            timeout: 15000,
             validateStatus: (s) => s === 200
           });
 
-          // Scan the entire HTML for the streaming keys
           const html = response.data.toString();
 
-          // Pattern-match for the stream source and CSRF token (scans whole HTML)
-          const fileMatch = html.match(/["']?(?:file|link|source|src|url)["']?\s*[:=]\s*["']([^"']+)["']/i);
-          const keyMatch = html.match(/["']?(?:key|token|csrf)["']?\s*[:=]\s*["']([^"']+)["']/i);
+          // IMPROVED EXTRACTION:
+          // 1. Try to find the file/playlist path. Search for 'file' or 'link' but exclude .js files.
+          // We look for patterns like file: "path" or link: "path"
+          let file: string | null = null;
+          let key: string | null = null;
 
-          if (fileMatch && keyMatch) {
-            let file = fileMatch[1].replace(/\\\//g, "/");
-            const key = keyMatch[1];
+          // Priority 1: Match 'file' or 'link' assignments (most reliable)
+          const playlistMatch = html.match(/["']?(?:file|link|source)["']?\s*[:=]\s*["']([^"']+\.(?:txt|m3u8|json|php)[^"']*)["']/i);
+          if (playlistMatch) {
+            file = playlistMatch[1];
+          } else {
+            // Priority 2: Fallback to a broader match but try to avoid script tags
+            const broadMatch = html.match(/["']?(?:file|link|source|url)["']?\s*[:=]\s*["']([^"']+)["']/i);
+            if (broadMatch && !broadMatch[1].endsWith('.js')) {
+              file = broadMatch[1];
+            }
+          }
+
+          const keyMatch = html.match(/["']?(?:key|token|csrf)["']?\s*[:=]\s*["']([^"']+)["']/i);
+          if (keyMatch) key = keyMatch[1];
+
+          if (file && key) {
+            file = file.replace(/\\\//g, "/");
             const playlistUrl = file.startsWith("http") ? file : `${currentDomain}${file}`;
+
+            console.log(`[getInfo] Found data Candidate! File: ${file} on ${currentDomain}`);
 
             try {
               const playlistRes = await axios.get(playlistUrl, {
@@ -72,7 +89,7 @@ export default async function getInfo(id: string) {
               let data = playlistRes.data;
               let playlist: any[] = [];
 
-              // Handle base64 encoded strings (common obfuscation)
+              // Handle base64 encoded strings
               if (typeof data === 'string' && data.length > 30 && !data.includes('http') && !data.includes('{')) {
                 try {
                   const decoded = Buffer.from(data, 'base64').toString('utf-8');
@@ -85,38 +102,43 @@ export default async function getInfo(id: string) {
               } else if (typeof data === 'object' && data !== null) {
                 playlist = data.playlist || data.data || [];
               } else if (typeof data === 'string') {
-                if (data.trim().startsWith('{') || data.trim().startsWith('[')) {
+                const trimmed = data.trim();
+                if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
                   try {
-                    const jsonData = JSON.parse(data);
+                    const jsonData = JSON.parse(trimmed);
                     playlist = Array.isArray(jsonData) ? jsonData : (jsonData.playlist || jsonData.data || []);
                   } catch (e) { }
                 }
 
-                if (playlist.length === 0 && data.includes('http')) {
-                  playlist = [{ file: data, label: 'Auto' }];
+                if (playlist.length === 0 && (trimmed.includes('http') || trimmed.includes('.m3u8'))) {
+                  playlist = [{ file: trimmed, label: 'Auto' }];
                 }
               }
 
               if (playlist.length > 0) {
-                console.log(`[getInfo] Success on ${currentDomain} for ${path}`);
+                console.log(`[getInfo] Success! Found ${playlist.length} tracks on ${currentDomain}`);
                 return { success: true, data: { playlist, key } };
               } else {
-                console.log(`[getInfo] Playlist empty or unrecognized for ${currentDomain} (${path}). Content: ${typeof data === 'string' ? data.substring(0, 100) : 'object'}`);
+                console.log(`[getInfo] Playlist rejected (empty/invalid) from ${currentDomain}`);
               }
             } catch (playlistErr: any) {
-              console.log(`[getInfo] Playlist fetch failed for ${currentDomain} (${path}): ${playlistErr.message}`);
+              console.log(`[getInfo] Failed to load candidate playlist: ${playlistErr.message}`);
             }
           }
         } catch (e: any) {
           if (e.response?.status !== 404) {
-            console.log(`[getInfo] Error checking ${targetUrl}: ${e.message}`);
+            console.log(`[getInfo] Mirror connectivity issue: ${targetUrl} (${e.message})`);
           }
         }
       }
     }
 
-    return { success: false, message: "Stream not found. The mirror might be blocked or down." };
+    return {
+      success: false,
+      message: "Streaming provider is currently rotating domains or the IMDB ID is the wrong format for TV shows."
+    };
+
   } catch (error: any) {
-    return { success: false, message: `API Error: ${error.message}` };
+    return { success: false, message: `Fatal API Error: ${error.message}` };
   }
 }
