@@ -31,7 +31,7 @@ app.get("/", (req, res) => {
 
 const Port = process.env.PORT || 5001;
 
-if (process.env.NODE_ENV !== 'production') {
+if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
   app.listen(Port, () => {
     console.log(`Server running on port ${Port}`);
   });
