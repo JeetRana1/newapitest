@@ -83,11 +83,17 @@ export default async function getInfo(id: string) {
               try { data = JSON.parse(data); } catch (e) { }
             }
 
-            const playlist = Array.isArray(data) ? data : (data?.playlist || data?.data || []);
+            let playlist = Array.isArray(data) ? data : (data?.playlist || data?.data || []);
+
+            // If it's a plain string (direct link), wrap it in a playlist item
+            if (playlist.length === 0 && typeof data === 'string' && data.includes('http')) {
+              playlist = [{ file: data, label: 'Auto' }];
+            }
+
             const clean = playlist.filter((i: any) => i && (i.file || i.link));
 
             if (clean.length > 0) {
-              console.log(`[getInfo] Success on ${currentDomain}`);
+              console.log(`[getInfo] Success on ${currentDomain} (${clean.length} tracks)`);
               return { success: true, data: { playlist: clean, key: kStr } };
             }
           }
