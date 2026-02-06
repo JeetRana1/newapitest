@@ -12,23 +12,29 @@ export default async function getInfo(id: string) {
     const domains = [
       playerUrl,
       "https://vekna402las.com",
+      "https://vekna402las.net",
       "https://allmovieland.link",
       "https://allmovieland.work",
       "https://allmovieland.site",
-      "https://allmovieland.io"
+      "https://allmovieland.io",
+      "https://allmovieland.tv",
+      "https://allmovieland.net"
     ];
 
     const headers = {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-      "Referer": "https://allmovieland.link/",
-      "Origin": "https://allmovieland.link"
+      "Referer": "https://allmovieland.link/", // Some mirrors are very sensitive to referer
+      "Origin": "https://allmovieland.link",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9"
     };
 
     for (let currentDomain of domains) {
       if (!currentDomain) continue;
       currentDomain = currentDomain.replace(/\/$/, '');
 
-      const paths = [`/play/${id}`, `/movie/${id}`, `/embed/${id}`];
+      // Expanded path variants for better TV and Movie coverage
+      const paths = [`/play/${id}`, `/v/${id}`, `/movie/${id}`, `/embed/${id}`];
 
       for (const path of paths) {
         const targetUrl = `${currentDomain}${path}`;
