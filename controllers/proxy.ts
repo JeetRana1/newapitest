@@ -54,11 +54,12 @@ export default async function proxy(req: Request, res: Response) {
 
         const getProxyHeaders = (url: string) => {
             const uri = new URL(url);
-            // Use the hint if available, otherwise fallback to smart guessing
+            // Use the hint from the query param if available - MOST RELIABLE
+            // This bypasses the need for the frontend to set tricky headers
             let referer = proxyRef || "https://allmovieland.link/";
 
             if (!proxyRef) {
-                // Dynamic Referer Intelligence
+                // Dynamic Referer Intelligence (Fallback only)
                 if (url.includes('slime') || url.includes('vekna')) {
                     referer = `https://${url.includes('slime') ? 'vekna402las.com' : uri.host}/`;
                 } else if (url.includes('vidsrc')) {
