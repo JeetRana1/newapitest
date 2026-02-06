@@ -33,78 +33,74 @@ export default async function getInfo(id: string) {
       for (const path of paths) {
         const targetUrl = `${currentDomain}${path}`;
         try {
-          console.log(`[getInfo] Checking mirror: ${targetUrl}`);
+          console.log(`[getInfo] Checking: ${targetUrl}`);
 
-          // Use Tor for the initial page fetch and playlist - it was more stable before
           const response = await axios.get(targetUrl, {
             headers,
             httpAgent: torAgent,
             httpsAgent: torAgent,
-            timeout: 15000,
+            timeout: 10000,
             validateStatus: (s) => s === 200
           });
 
-          const html = response.data;
-          const $ = cheerio.load(html);
+          const $ = cheerio.load(response.data);
+          let scriptContent = "";
+          $("script").each((_, el) => { scriptContent += $(el).html() + "\n"; });
 
-          let file: string | null = null;
-          let key: string | null = null;
+          // The provider often uses 'file', 'link', or 'source' in a script tag
+          const fileMatch = scriptContent.match(/["']?(?:file|link|source|src)["']?\s*[:=]\s*["']([^"']+)["']/i);
+          const keyMatch = scriptContent.match(/["']?(?:key)["']?\s*[:=]\s*["']([^"']+)["']/i);
 
-          $("script").each((_, el) => {
-            const text = $(el).html() || "";
-            if (!text) return;
+          if (fileMatch && keyMatch) {
+            let file = fileMatch[1].replace(/\\\//g, "/");
+            const key = keyMatch[1];
+            const playlistUrl = file.startsWith("http") ? file : `${currentDomain}${file}`;
 
-            // Specifically unescape slashes in the script content
-            const unescapedText = text.replace(/\\\//g, "/");
-
-            const fMatch = unescapedText.match(/["'](?:file|link|source)["']\s*[:=]\s*["']([^"']+)["']/);
-            const kMatch = unescapedText.match(/["'](?:key)["']\s*[:=]\s*["']([^"']+)["']/);
-
-            if (fMatch) file = fMatch[1];
-            if (kMatch) key = kMatch[1];
-          });
-
-          if (file && key) {
-            const fStr = file as string;
-            const kStr = key as string;
-            const playlistUrl = fStr.startsWith("http") ? fStr : `${currentDomain}${fStr}`;
-
-            console.log(`[getInfo] Found Playlist: ${playlistUrl}`);
+            console.log(`[getInfo] Found stream at ${currentDomain}`);
 
             const playlistRes = await axios.get(playlistUrl, {
-              headers: { ...headers, "X-Csrf-Token": kStr, "Referer": targetUrl },
+              headers: { ...headers, "X-Csrf-Token": key, "Referer": targetUrl },
               httpAgent: torAgent,
               httpsAgent: torAgent,
-              timeout: 15000
+              timeout: 10000
             });
 
             let data = playlistRes.data;
-            if (typeof data === 'string' && data.trim().startsWith('{')) {
-              try { data = JSON.parse(data); } catch (e) { }
+            let playlist: any[] = [];
+
+            // Hanlde base64 encoded strings
+            if (typeof data === 'string' && data.length > 30 && !data.includes('http') && !data.includes('{')) {
+              try {
+                const decoded = Buffer.from(data, 'base64').toString('utf-8');
+                if (decoded.includes('http') || decoded.includes('{') || decoded.startsWith('[')) data = decoded;
+              } catch (e) { }
             }
 
-            let playlist = Array.isArray(data) ? data : (data?.playlist || data?.data || []);
-
-            // If it's a plain string (direct link), wrap it in a playlist item
-            if (playlist.length === 0 && typeof data === 'string' && data.includes('http')) {
-              playlist = [{ file: data, label: 'Auto' }];
+            if (Array.isArray(data)) {
+              playlist = data;
+            } else if (typeof data === 'object' && data !== null) {
+              playlist = data.playlist || data.data || [];
+            } else if (typeof data === 'string') {
+              if (data.includes('http')) {
+                playlist = [{ file: data, label: 'Auto' }];
+              } else {
+                try {
+                  const jsonData = JSON.parse(data);
+                  playlist = Array.isArray(jsonData) ? jsonData : (jsonData.playlist || jsonData.data || []);
+                } catch (e) { }
+              }
             }
 
-            const clean = playlist.filter((i: any) => i && (i.file || i.link));
-
-            if (clean.length > 0) {
-              console.log(`[getInfo] Success on ${currentDomain} (${clean.length} tracks)`);
-              return { success: true, data: { playlist: clean, key: kStr } };
+            if (playlist.length > 0) {
+              return { success: true, data: { playlist, key } };
             }
           }
-        } catch (e: any) {
-          // Silent fail for 404s
-        }
+        } catch (e) { }
       }
     }
 
-    return { success: false, message: "Stream not found. The provider might be updating. Please try again soon." };
+    return { success: false, message: "Stream not found. The mirror might be blocked or down." };
   } catch (error: any) {
-    return { success: false, message: `System Error: ${error.message}` };
+    return { success: false, message: `API Error: ${error.message}` };
   }
 }
