@@ -33,6 +33,10 @@ export async function getPlayerUrl() {
         /AwsIndStreamDomain\s*:\s*'([^']+)'/,
         /AwsIndStreamDomain\s*:\s*"([^"]+)"/,
         /['"]?AwsIndStreamDomain['"]?\s*[:=]\s*['"]([^'"]+)['"]/,
+        /domain\s*[:=]\s*['"]([^'"]*\.com)['"]/,
+        /['"]baseURL['"]\s*[:=]\s*['"]([^'"]+)['"]/,
+        /['"]apiURL['"]\s*[:=]\s*['"]([^'"]+)['"]/,
+        /['"]streamURL['"]\s*[:=]\s*['"]([^'"]+)['"]/,
       ];
       
       for (const pattern of patterns) {
@@ -43,11 +47,19 @@ export async function getPlayerUrl() {
           // Validate domain format and ensure it's not a known dead one
           if (domain.startsWith('http') && !domain.includes('protection-episode-i-222.site')) {
             return domain.endsWith('/') ? domain.slice(0, -1) : domain;
+          } else if (!domain.startsWith('http')) {
+            // If it doesn't start with http, prepend https
+            const fullDomain = `https://${domain}`;
+            if (!fullDomain.includes('protection-episode-i-222.site')) {
+              return fullDomain.endsWith('/') ? fullDomain.slice(0, -1) : fullDomain;
+            }
           }
         }
       }
       
       console.log(`No player domain found with any pattern in response from: ${url}`);
+      // Log a snippet of the response for debugging
+      console.log(`Response snippet: ${resText.substring(0, 500)}...`);
       return null;
     } catch (e: any) {
       console.log(`Failed to fetch from: ${url}`, e.message);
@@ -82,7 +94,16 @@ export async function getPlayerUrl() {
     playerUrl = await tryFetch('https://allmovieland.tv/player.js');
   }
 
-  // 6. Hardcoded fallback (as a last resort if all scraping fails)
+  // 6. Try some other potential domains
+  if (!playerUrl) {
+    playerUrl = await tryFetch('https://allmovieland.cam/player.js');
+  }
+  
+  if (!playerUrl) {
+    playerUrl = await tryFetch('https://allmovieland.skin/player.js');
+  }
+
+  // 7. Hardcoded fallback (as a last resort if all scraping fails)
   if (!playerUrl) {
     playerUrl = 'https://vekna402las.com';
     console.log('Using hardcoded fallback URL');

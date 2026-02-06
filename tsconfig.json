@@ -108,5 +108,9 @@
   },
   "exclude": [
     "debug_info.ts"
+  ],
+  "include": [
+    "**/*",
+    ".env"
   ]
 }
