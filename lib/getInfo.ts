@@ -17,9 +17,6 @@ export default async function getInfo(id: string) {
       "https://allmovieland.site",
       "https://allmovieland.io",
       "https://vidsrc.ru",       // Primary - Very Stable
-      "https://vidsrc.pro",      // Secondary - Fast
-      "https://vidlink.pro",     // Backup - Reliable
-      "https://superembed.stream", // Backup - Good Quality
       playerUrl // Dynamic Fallback
     ];
 
