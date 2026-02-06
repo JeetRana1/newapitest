@@ -107,16 +107,20 @@ export default async function proxy(req: Request, res: Response) {
         let response;
         try {
             // Priority for segments: Try Direct FIRST for speed, then Tor Fallback
-            // Priority for manifests: Try Tor FIRST for privacy/bypass, then Direct Fallback
+            // But if we detect a 403 (Block), we fail-fast to Tor to save time
             if (isSegment) {
                 try {
-                    console.log(`[Proxy FastPath] Trying direct fetch for segment: ${targetUrl.substring(0, 80)}...`);
+                    // Try Direct First
                     response = await tryFetch(false);
-                } catch (e) {
-                    console.log(`[Proxy SlowPath] Direct failed or blocked. Falling back to Tor...`);
+                } catch (e: any) {
+                    // If blocked (403), immediately switch to Tor
+                    if (e.message.includes('403') || e.message.includes('401')) {
+                        console.log(`[Proxy Adaptive] Direct blocked (${e.message}). Switching to Tor lane...`);
+                    }
                     response = await tryFetch(true);
                 }
             } else {
+                // Manifests always try Tor first for privacy
                 try {
                     response = await tryFetch(true);
                 } catch (e) {
