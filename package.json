@@ -4,7 +4,7 @@
   "description": "8Stream API for streaming movies and TV shows",
   "main": "index.js",
   "scripts": {
-    "build": "rimraf dist && npx tsc",
+    "build": "echo 'Vercel handles TypeScript compilation'",
     "start": "node dist/index.js",
     "predev": "rimraf dist && tsc",
     "dev": "concurrently \"npx tsc -w\" \"nodemon dist/index.js\"",
