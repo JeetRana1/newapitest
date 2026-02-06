@@ -10,7 +10,13 @@ export default async function getInfo(id: string) {
 
     // 1. Curated High-Reliability Mirror List (Gold Standard Only)
     const domains = [
-      "https://vidsrc.me",       // Primary - Very Stable
+      "https://allmovieland.link/",
+      "https://vekna402las.com",
+      "https://allmovieland.link",
+      "https://allmovieland.work",
+      "https://allmovieland.site",
+      "https://allmovieland.io",
+      "https://vidsrc.ru",       // Primary - Very Stable
       "https://vidsrc.pro",      // Secondary - Fast
       "https://vidlink.pro",     // Backup - Reliable
       "https://superembed.stream", // Backup - Good Quality
