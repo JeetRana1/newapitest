@@ -40,6 +40,8 @@ export default async function proxy(req: Request, res: Response) {
         }
     }
 
+    let isSegment = false;
+
     if (!targetUrl) return res.status(400).send("Proxy Error: No URL");
 
     try {
@@ -48,7 +50,7 @@ export default async function proxy(req: Request, res: Response) {
 
         // 2. Identify file types and generate smart headers
         const isM3U8 = targetUrl.includes('.m3u8') || targetUrl.includes('.txt');
-        const isSegment = targetUrl.includes('.ts') || targetUrl.includes('.mp4');
+        isSegment = targetUrl.includes('.ts') || targetUrl.includes('.mp4');
 
         const getProxyHeaders = (url: string) => {
             const uri = new URL(url);
@@ -134,8 +136,9 @@ export default async function proxy(req: Request, res: Response) {
 
         let contentType = response.headers["content-type"];
 
-        // 3. Recursive HLS Rewriting
+        // 3. Recursive HLS Rewriting (Manifests)
         if (isM3U8 || (contentType && (contentType.includes('mpegurl') || contentType.includes('application/x-mpegURL')))) {
+            console.log(`[Proxy Manifest] Rewriting: ${targetUrl.substring(0, 60)}...`);
             let content = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
 
             if (!content.includes('#EXTM3U') && !targetUrl.includes('.txt')) {
@@ -145,23 +148,24 @@ export default async function proxy(req: Request, res: Response) {
             res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
             const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
 
-            // Sustain the referer through the recursive calls
+            // Sustain the referer through recursive quality tracks and segments
             const refParam = proxyRef ? `&proxy_ref=${encodeURIComponent(proxyRef)}` : "";
 
             const rewrittenLines = content.split('\n').map(line => {
                 const trimmed = line.trim();
                 if (!trimmed) return line;
 
+                // 3a. Handle Quality Variant Manifests (e.g. URI="master.m3u8")
                 if (trimmed.includes('URI="')) {
                     return trimmed.replace(/URI="([^"]+)"/g, (match, relUrl) => {
-                        if (host && relUrl.includes(host)) return match;
                         const absUrl = relUrl.startsWith('http') ? relUrl : new URL(relUrl, baseUrl).href;
+                        // Inject proxy_ref into the sub-manifest URL
                         return `URI="${proxyBase}${encodeURIComponent(absUrl)}${refParam}"`;
                     });
                 }
 
+                // 3b. Handle Fragmented Video Segments (.ts)
                 if (!trimmed.startsWith('#')) {
-                    if (host && trimmed.includes(host)) return line;
                     const absUrl = trimmed.startsWith('http') ? trimmed : new URL(trimmed, baseUrl).href;
                     return `${proxyBase}${encodeURIComponent(absUrl)}${refParam}`;
                 }
@@ -183,7 +187,12 @@ export default async function proxy(req: Request, res: Response) {
         response.data.pipe(res);
 
     } catch (error: any) {
-        console.error(`[Proxy Fatal] ${error.message} for ${targetUrl}`);
+        // Only log fatal errors for manifests (crucial for debugging)
+        // Silence segment errors as they are retried or handled by the player
+        if (!isSegment) {
+            console.error(`[Proxy Fatal] ${error.message} for ${targetUrl}`);
+        }
+
         if (!res.headersSent) {
             res.status(500).send("Proxy connectivity issues. Please try refreshing.");
         }
