@@ -61,46 +61,57 @@ export default async function getInfo(id: string) {
             const key = keyMatch[1];
             const playlistUrl = file.startsWith("http") ? file : `${currentDomain}${file}`;
 
-            console.log(`[getInfo] Found stream at ${currentDomain}`);
+            try {
+              const playlistRes = await axios.get(playlistUrl, {
+                headers: { ...headers, "X-Csrf-Token": key, "Referer": targetUrl },
+                httpAgent: torAgent,
+                httpsAgent: torAgent,
+                timeout: 15000
+              });
 
-            const playlistRes = await axios.get(playlistUrl, {
-              headers: { ...headers, "X-Csrf-Token": key, "Referer": targetUrl },
-              httpAgent: torAgent,
-              httpsAgent: torAgent,
-              timeout: 10000
-            });
+              let data = playlistRes.data;
+              let playlist: any[] = [];
 
-            let data = playlistRes.data;
-            let playlist: any[] = [];
-
-            // Hanlde base64 encoded strings
-            if (typeof data === 'string' && data.length > 30 && !data.includes('http') && !data.includes('{')) {
-              try {
-                const decoded = Buffer.from(data, 'base64').toString('utf-8');
-                if (decoded.includes('http') || decoded.includes('{') || decoded.startsWith('[')) data = decoded;
-              } catch (e) { }
-            }
-
-            if (Array.isArray(data)) {
-              playlist = data;
-            } else if (typeof data === 'object' && data !== null) {
-              playlist = data.playlist || data.data || [];
-            } else if (typeof data === 'string') {
-              if (data.includes('http')) {
-                playlist = [{ file: data, label: 'Auto' }];
-              } else {
+              // Handle base64 encoded strings (common obfuscation)
+              if (typeof data === 'string' && data.length > 30 && !data.includes('http') && !data.includes('{')) {
                 try {
-                  const jsonData = JSON.parse(data);
-                  playlist = Array.isArray(jsonData) ? jsonData : (jsonData.playlist || jsonData.data || []);
+                  const decoded = Buffer.from(data, 'base64').toString('utf-8');
+                  if (decoded.includes('http') || decoded.includes('{') || decoded.startsWith('[')) data = decoded;
                 } catch (e) { }
               }
-            }
 
-            if (playlist.length > 0) {
-              return { success: true, data: { playlist, key } };
+              if (Array.isArray(data)) {
+                playlist = data;
+              } else if (typeof data === 'object' && data !== null) {
+                playlist = data.playlist || data.data || [];
+              } else if (typeof data === 'string') {
+                if (data.trim().startsWith('{') || data.trim().startsWith('[')) {
+                  try {
+                    const jsonData = JSON.parse(data);
+                    playlist = Array.isArray(jsonData) ? jsonData : (jsonData.playlist || jsonData.data || []);
+                  } catch (e) { }
+                }
+
+                if (playlist.length === 0 && data.includes('http')) {
+                  playlist = [{ file: data, label: 'Auto' }];
+                }
+              }
+
+              if (playlist.length > 0) {
+                console.log(`[getInfo] Success on ${currentDomain} for ${path}`);
+                return { success: true, data: { playlist, key } };
+              } else {
+                console.log(`[getInfo] Playlist empty or unrecognized for ${currentDomain} (${path}). Content: ${typeof data === 'string' ? data.substring(0, 100) : 'object'}`);
+              }
+            } catch (playlistErr: any) {
+              console.log(`[getInfo] Playlist fetch failed for ${currentDomain} (${path}): ${playlistErr.message}`);
             }
           }
-        } catch (e) { }
+        } catch (e: any) {
+          if (e.response?.status !== 404) {
+            console.log(`[getInfo] Error checking ${targetUrl}: ${e.message}`);
+          }
+        }
       }
     }
 
