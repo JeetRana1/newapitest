@@ -10,5 +10,6 @@ router.get("/mediaInfo", mediaInfo);
 router.post("/getStream", getStream);
 router.get("/getSeasonList", getSeasonList);
 router.get("/proxy", proxy); // New CORS Proxy route
+router.all("/stream/*", proxy); // Handle encoded streaming paths
 
 export default router;

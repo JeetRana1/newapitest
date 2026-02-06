@@ -25,10 +25,14 @@ app.use(express.json());
 // if (process.env.RATE_LIMIT === "true") {
 //   app.use(limiter);
 // }
-app.use("/api/v1", router);
 app.get("/", (req, res) => {
   res.send("its ok");
 });
+
+// Alias for relative path streaming (catches /stream/ requests from root)
+import proxy from "./controllers/proxy";
+app.all("/stream/*", proxy);
+app.use("/api/v1", router);
 
 const Port = process.env.PORT || 7860;
 
