@@ -17,8 +17,18 @@ export default async function getInfo(id: string) {
       "https://new1.moviesdrive.surf",
       "https://vidsrc.me",
       "https://vidsrc.pro",
-      "https://vidsrc.xyz",   // Reliable Mirror 1
-      "https://vidlink.pro",  // Reliable Mirror 2 
+      "https://vidsrc.xyz",
+      "https://vidlink.pro",
+      "https://streamtape.com",
+      "https://vidcloud9.net",
+      "https://vidstreaming.io",
+      "https://mixdrop.co",
+      "https://vidmoli.to",
+      "https://vidtodo.com",
+      "https://vidmix.org",
+      "https://blink.pro",
+      "https://yourupload.com",
+      "https://ok.ru",
       "https://superembed.stream"
     ];
 

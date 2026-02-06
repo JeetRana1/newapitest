@@ -61,16 +61,25 @@ export default async function proxy(req: Request, res: Response) {
             } else if (url.includes('superembed')) {
                 referer = "https://superembed.stream/";
             } else {
-                // Default: Use the host of the stream as the referer (often works)
                 referer = `https://${uri.host}/`;
             }
+
+            const origin = referer.replace(/\/$/, '');
 
             return {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
                 "Referer": referer,
-                "Origin": referer.replace(/\/$/, ''),
+                "Origin": origin,
                 "Accept": "*/*",
-                "Connection": "keep-alive"
+                "Accept-Language": "en-US,en;q=0.9",
+                "Connection": "keep-alive",
+                "Sec-Fetch-Dest": isSegment ? "video" : "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "cross-site",
+                "DNT": "1",
+                "Pragma": "no-cache",
+                "Cache-Control": "no-cache",
+                "Host": uri.host
             };
         };
 
