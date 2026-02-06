@@ -54,8 +54,8 @@ export default async function getInfo(id: string) {
             const text = $(el).html() || "";
             if (!text) return;
 
-            // Unescape the script content to handle \/ in URLs
-            const unescapedText = text.replace(/\\/g, "");
+            // Specifically unescape slashes in the script content
+            const unescapedText = text.replace(/\\\//g, "/");
 
             const fMatch = unescapedText.match(/["'](?:file|link|source)["']\s*[:=]\s*["']([^"']+)["']/);
             const kMatch = unescapedText.match(/["'](?:key)["']\s*[:=]\s*["']([^"']+)["']/);
