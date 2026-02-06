@@ -1,24 +1,24 @@
-FROM node:20-alpine AS builder
+FROM node:20-alpine
+
+# Install Tor and create a directory for it
+RUN apk add --no-cache tor
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm ci
+RUN npm install
+
 COPY . .
 RUN npm run build
 
-FROM node:20-alpine AS runner
+# Create a start script to run both Tor and the Node app
+RUN echo "#!/bin/sh" > /app/start.sh && \
+    echo "tor &" >> /app/start.sh && \
+    echo "npm start" >> /app/start.sh && \
+    chmod +x /app/start.sh
 
-WORKDIR /app
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/package*.json ./
-RUN npm ci --only=production
+# Open port 7860 for Hugging Face
+ENV PORT=7860
+EXPOSE 7860
 
-
-RUN adduser -D myuser 
-USER myuser
-
-ENV PORT=7860 \
-    BASE_URL=https://allmovieland.link/player.js?v=60%20128
-EXPOSE 7860 
-
-CMD ["npm", "start"]  
+# Start everything
+CMD ["/app/start.sh"]

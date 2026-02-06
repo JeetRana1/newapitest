@@ -22,6 +22,7 @@
     "express-rate-limit": "^7.1.5",
     "http-proxy-middleware": "^2.0.6",
     "rimraf": "^5.0.5",
+    "socks-proxy-agent": "^8.0.2",
     "typescript": "^5.3.3"
   },
   "devDependencies": {
