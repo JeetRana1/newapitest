@@ -16,14 +16,15 @@ app.use(
 dotenv.config();
 app.use(express.json());
 
-const limiter = rateLimit({
-  windowMs: 5 * 60 * 1000, // 5 minutes
-  max: 1000, // Increased limit for streaming usage
-  message: "Too many requests, please try again later.",
-});
-if (process.env.RATE_LIMIT === "true") {
-  app.use(limiter);
-}
+// Temporarily disabling rate limiter to avoid proxy issues on Vercel
+// const limiter = rateLimit({
+//   windowMs: 5 * 60 * 1000, // 5 minutes
+//   max: 1000, // Increased limit for streaming usage
+//   message: "Too many requests, please try again later.",
+// });
+// if (process.env.RATE_LIMIT === "true") {
+//   app.use(limiter);
+// }
 app.use("/api/v1", router);
 app.get("/", (req, res) => {
   res.send("its ok");
