@@ -24,9 +24,6 @@ const limiter = rateLimit({
 if (process.env.RATE_LIMIT === "true") {
   app.use(limiter);
 }
-app.get("/api/v1", (req, res) => {
-  res.json({ success: true, message: "8Stream API is running" });
-});
 app.use("/api/v1", router);
 app.get("/", (req, res) => {
   res.send("its ok");
@@ -34,7 +31,7 @@ app.get("/", (req, res) => {
 
 const Port = process.env.PORT || 5001;
 
-if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+if (process.env.NODE_ENV !== 'production') {
   app.listen(Port, () => {
     console.log(`Server running on port ${Port}`);
   });

@@ -11,7 +11,6 @@ export default async function getInfo(id: string) {
     // Try https://allmovieland.link/ first, then google.com as fallback
     let response;
     try {
-      console.log(`Attempting to fetch from: ${targetUrl} (Referer: allmovieland.link)`);
       response = await axios.get(targetUrl, {
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -25,31 +24,16 @@ export default async function getInfo(id: string) {
       });
     } catch (e: any) {
       if (e.response?.status === 404) {
+        // Retry with a different common referer
         console.log("404 with allmovieland.link, retrying with google...");
-        try {
-          response = await axios.get(targetUrl, {
-            headers: {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-              "Referer": "https://google.com/",
-              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
-            },
-            timeout: 10000
-          });
-        } catch (e2: any) {
-          if (e2.response?.status === 404) {
-            console.log("404 with google, retrying with allmovieland.io...");
-            response = await axios.get(targetUrl, {
-              headers: {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Referer": "https://allmovieland.io/",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
-              },
-              timeout: 10000
-            });
-          } else {
-            throw e2;
-          }
-        }
+        response = await axios.get(targetUrl, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "Referer": "https://google.com/",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
+          },
+          timeout: 10000
+        });
       } else {
         throw e;
       }

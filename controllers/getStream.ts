@@ -20,25 +20,12 @@ export default async function getStream(req: Request, res: Response) {
     // fetch playlist with a timeout so the request fails fast if remote host is unresponsive
     const linkRes = await axios.get(playlistUrl, {
       headers: {
-        Accept: "*/*",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "no-cache",
-        "Content-Length": "0",
-        "Content-Type": "application/x-www-form-urlencoded",
-        Dnt: "1",
-        Origin: "https://allmovieland.link",
-        Pragma: "no-cache",
-        "Sec-Ch-Ua":
-          '"Not_A Brand";v="8", "Chromium";v="120", "Microsoft Edge";v="120"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"Windows"',
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-origin",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "X-Csrf-Token": key,
-        Referer: "https://allmovieland.link/",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://allmovieland.link/", // Some streams require this specific referer
+        "Origin": "https://allmovieland.link",
+        "X-Csrf-Token": key
       },
       timeout: 10000,
     });
