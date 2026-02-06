@@ -22,18 +22,32 @@ export async function getPlayerUrl() {
       console.log(`Successfully fetched from: ${url}, status: ${res.status}`);
       
       const resText = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
-      const playerUrlMatch = resText.match(/const AwsIndStreamDomain\s*=\s*'([^']+)'/);
-
-      if (playerUrlMatch && playerUrlMatch[1]) {
-        const domain = playerUrlMatch[1];
-        console.log(`Found player domain: ${domain} from URL: ${url}`);
-        // Validate domain format and ensure it's not a known dead one
-        if (domain.startsWith('http') && !domain.includes('protection-episode-i-222.site')) {
-          return domain.endsWith('/') ? domain.slice(0, -1) : domain;
+      console.log(`Response length from ${url}: ${resText.length}`);
+      
+      // Look for multiple possible patterns
+      const patterns = [
+        /const\s+AwsIndStreamDomain\s*=\s*'([^']+)'/,
+        /const\s+AwsIndStreamDomain\s*=\s*"([^"]+)"/,
+        /var\s+AwsIndStreamDomain\s*=\s*'([^']+)'/,
+        /var\s+AwsIndStreamDomain\s*=\s*"([^"]+)"/,
+        /AwsIndStreamDomain\s*:\s*'([^']+)'/,
+        /AwsIndStreamDomain\s*:\s*"([^"]+)"/,
+        /['"]?AwsIndStreamDomain['"]?\s*[:=]\s*['"]([^'"]+)['"]/,
+      ];
+      
+      for (const pattern of patterns) {
+        const playerUrlMatch = resText.match(pattern);
+        if (playerUrlMatch && playerUrlMatch[1]) {
+          const domain = playerUrlMatch[1];
+          console.log(`Found player domain with pattern ${pattern}: ${domain} from URL: ${url}`);
+          // Validate domain format and ensure it's not a known dead one
+          if (domain.startsWith('http') && !domain.includes('protection-episode-i-222.site')) {
+            return domain.endsWith('/') ? domain.slice(0, -1) : domain;
+          }
         }
-      } else {
-        console.log(`No player domain found in response from: ${url}`);
       }
+      
+      console.log(`No player domain found with any pattern in response from: ${url}`);
       return null;
     } catch (e: any) {
       console.log(`Failed to fetch from: ${url}`, e.message);

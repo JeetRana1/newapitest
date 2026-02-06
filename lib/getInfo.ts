@@ -79,18 +79,55 @@ export default async function getInfo(id: string) {
     }
 
     const $ = cheerio.load(response.data);
-    const script = $("script").last().html()!;
+    
+    // Look for scripts that contain the data we need
+    let scriptContent = null;
+    let matchedContent = null;
+    
+    // First, try to find the script with the specific pattern
+    $('script').each((index, element) => {
+      const scriptText = $(element).html();
+      if (scriptText && (scriptText.includes('file') || scriptText.includes('key'))) {
+        // Look for the specific pattern that contains the data
+        const content = scriptText.match(/(\{[^;]*file[^}]*key[^}]*\});/) || 
+                       scriptText.match(/(\{[^;]*key[^}]*file[^}]*\});/) ||
+                       scriptText.match(/\((\{.*file.*key.*\})\)/) ||
+                       scriptText.match(/\((\{.*key.*file.*\})\)/) ||
+                       scriptText.match(/(\{[^}]*"file"[^}]*"key"[^}]*\});/) ||
+                       scriptText.match(/(\{[^}]*"key"[^}]*"file"[^}]*\});/);
+        
+        if (content && content[1]) {
+          matchedContent = content[1].trim().replace(/[;)]+$/, '');
+          scriptContent = scriptText;
+          return false; // break the loop
+        }
+      }
+    });
 
-    if (!script) {
-      return { success: false, message: "Could not find stream data script on page" };
+    // If we didn't find it with the specific search, try the last script anyway
+    if (!matchedContent) {
+      const lastScript = $("script").last().html();
+      if (lastScript) {
+        const content = lastScript.match(/(\{[^;]+});/)?.[1] || lastScript.match(/\((\{.*\})\)/)?.[1];
+        if (content) {
+          matchedContent = content;
+          scriptContent = lastScript;
+        }
+      }
     }
 
-    const content = script.match(/(\{[^;]+});/)?.[1] || script.match(/\((\{.*\})\)/)?.[1];
-    if (!content) {
-      return { success: false, message: "Media metadata not found in script" };
+    if (!scriptContent || !matchedContent) {
+      console.log("Available scripts on the page:");
+      $('script').each((index, element) => {
+        const scriptText = $(element).html();
+        if (scriptText && scriptText.length > 0) {
+          console.log(`Script ${index}:`, scriptText.substring(0, 200) + (scriptText.length > 200 ? '...' : ''));
+        }
+      });
+      return { success: false, message: "Could not find stream data script on page. Available scripts logged to console." };
     }
 
-    const data = JSON.parse(content);
+    const data = JSON.parse(matchedContent);
     const file = data["file"];
     const key = data["key"];
 

@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import router from "./routes/route";
 import rateLimit from "express-rate-limit";
+import { getPlayerUrl } from "./lib/getPlayerUrl";
 
 const app = express();
 
@@ -25,6 +26,17 @@ if (process.env.RATE_LIMIT === "true") {
   app.use(limiter);
 }
 app.use("/api/v1", router);
+
+// Debug endpoint to test getPlayerUrl
+app.get("/debug/player-url", async (req, res) => {
+  try {
+    const playerUrl = await getPlayerUrl();
+    res.json({ playerUrl });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get("/", (req, res) => {
   res.send("its ok");
 });
