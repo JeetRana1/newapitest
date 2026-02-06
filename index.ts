@@ -31,8 +31,7 @@ app.get("/", (req, res) => {
 
 const Port = process.env.PORT || 5001;
 
-// Only start server in development (not on Vercel)
-if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+if (process.env.NODE_ENV !== 'production') {
   app.listen(Port, () => {
     console.log(`Server running on port ${Port}`);
   });
