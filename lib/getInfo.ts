@@ -141,7 +141,17 @@ export default async function getInfo(id: string) {
 
               if (playlist.length > 0) {
                 console.log(`[getInfo] Success! Found Stream on ${currentDomain}`);
-                return { success: true, data: { playlist, key } };
+
+                // CRITICAL: Encode the referer into the file URLs so the Proxy knows how to "handshake"
+                const optimizedPlaylist = playlist.map((item: any) => {
+                  if (item.file && !item.file.includes('proxy_ref=')) {
+                    const separator = item.file.includes('?') ? '&' : '?';
+                    item.file = `${item.file}${separator}proxy_ref=${encodeURIComponent(currentDomain)}`;
+                  }
+                  return item;
+                });
+
+                return { success: true, data: { playlist: optimizedPlaylist, key } };
               }
             } catch (playlistErr: any) {
               // Silence playlist 404s, keep searching

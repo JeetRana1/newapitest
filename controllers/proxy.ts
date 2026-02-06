@@ -43,27 +43,39 @@ export default async function proxy(req: Request, res: Response) {
     if (!targetUrl) return res.status(400).send("Proxy Error: No URL");
 
     try {
+        // 1. Extract and Strip the Referer Hint (proxy_ref)
+        const urlObj = new URL(targetUrl);
+        const proxyRef = urlObj.searchParams.get('proxy_ref');
+
+        // Remove the helper param before fetching
+        urlObj.searchParams.delete('proxy_ref');
+        targetUrl = urlObj.toString();
+
         // 2. Identify file types and generate smart headers
         const isM3U8 = targetUrl.includes('.m3u8') || targetUrl.includes('.txt');
         const isSegment = targetUrl.includes('.ts') || targetUrl.includes('.mp4');
 
         const getProxyHeaders = (url: string) => {
             const uri = new URL(url);
-            let referer = "https://allmovieland.link/";
+            // Use the hint if available, otherwise fallback to smart guessing
+            let referer = proxyRef || "https://allmovieland.link/";
 
-            // Dynamic Referer Intelligence
-            if (url.includes('slime') || url.includes('vekna')) {
-                referer = `https://${url.includes('slime') ? 'vekna402las.com' : uri.host}/`;
-            } else if (url.includes('vidsrc')) {
-                referer = "https://vidsrc.me/";
-            } else if (url.includes('vidlink')) {
-                referer = "https://vidlink.pro/";
-            } else if (url.includes('superembed')) {
-                referer = "https://superembed.stream/";
-            } else {
-                referer = `https://${uri.host}/`;
+            if (!proxyRef) {
+                // Dynamic Referer Intelligence
+                if (url.includes('slime') || url.includes('vekna')) {
+                    referer = `https://${url.includes('slime') ? 'vekna402las.com' : uri.host}/`;
+                } else if (url.includes('vidsrc')) {
+                    referer = "https://vidsrc.me/";
+                } else if (url.includes('vidlink')) {
+                    referer = "https://vidlink.pro/";
+                } else if (url.includes('superembed')) {
+                    referer = "https://superembed.stream/";
+                } else {
+                    referer = `https://${uri.host}/`;
+                }
             }
 
+            if (!referer.endsWith('/')) referer += '/';
             const origin = referer.replace(/\/$/, '');
 
             return {
