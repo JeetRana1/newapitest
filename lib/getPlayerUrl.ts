@@ -50,9 +50,15 @@ export async function getPlayerUrl() {
     playerUrl = await tryFetch('https://allmovieland.io/player.js');
   }
 
-  // 5. Hardcoded fallback (as a last resort if all scraping fails)
+  // 5. Hardcoded fallbacks (as a last resort if all scraping fails)
   if (!playerUrl) {
-    playerUrl = 'https://vekna402las.com';
+    const fallbacks = [
+      'https://vekna402las.com',
+      'https://veknaplayer.com',
+      'https://allmovieland.link'
+    ];
+    // We'll just return the first one for now, or we could test them.
+    playerUrl = fallbacks[0];
   }
 
   console.log(`Resolved Player URL: ${playerUrl}`);
