@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "build": "rimraf dist && npx tsc",
+    "build": "npx rimraf dist && npx tsc",
     "start": "node dist/index.js",
     "predev": "rimraf dist && tsc",
     "dev": "concurrently \"npx tsc -w\" \"nodemon dist/index.js\"",
