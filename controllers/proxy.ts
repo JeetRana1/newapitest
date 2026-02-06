@@ -139,7 +139,19 @@ export default async function proxy(req: Request, res: Response) {
         // 3. Recursive HLS Rewriting (Manifests)
         if (isM3U8 || (contentType && (contentType.includes('mpegurl') || contentType.includes('application/x-mpegURL')))) {
             console.log(`[Proxy Manifest] Rewriting: ${targetUrl.substring(0, 60)}...`);
-            let content = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+
+            let content = "";
+            if (typeof response.data === 'string') {
+                content = response.data;
+            } else if (Buffer.isBuffer(response.data)) {
+                content = response.data.toString('utf-8');
+            } else if (typeof response.data === 'object') {
+                try {
+                    content = JSON.stringify(response.data);
+                } catch (e) {
+                    content = ""; // Fallback for circular/stream objects
+                }
+            }
 
             if (!content.includes('#EXTM3U') && !targetUrl.includes('.txt')) {
                 return res.send(content);
