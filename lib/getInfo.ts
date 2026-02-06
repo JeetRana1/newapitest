@@ -1,5 +1,4 @@
 import axios from "axios";
-import * as cheerio from "cheerio";
 import { getPlayerUrl } from "./getPlayerUrl";
 import { SocksProxyAgent } from 'socks-proxy-agent';
 
@@ -9,32 +8,45 @@ export default async function getInfo(id: string) {
   try {
     const playerUrl = await getPlayerUrl();
 
+    // 1. Expanded Domain List with High-Stability Backups
     const domains = [
       playerUrl,
       "https://vekna402las.com",
-      "https://vekna402las.net",
       "https://allmovieland.io",
       "https://allmovieland.link",
-      "https://allmovieland.work",
-      "https://allmovieland.site",
-      "https://allmovieland.tv",
-      "https://allmovieland.net",
-      "https://new1.moviesdrive.surf"
+      "https://new1.moviesdrive.surf",
+      "https://vidsrc.me",   // Global Backup 1
+      "https://vidsrc.pro",  // Global Backup 2
+      "https://superembed.stream" // Global Backup 3
     ];
 
     const headers = {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-      "Referer": "https://allmovieland.link/",
-      "Origin": "https://allmovieland.link",
+      "Referer": "https://google.com/",
       "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.9"
     };
+
+    // 2. Intelligence: Detect if it's a TV show ID (e.g. tt1234567-1-1)
+    // If it's just a raw ID 'tt1234567', we try to guess Season 1 Episode 1 for TV shows
+    const isTV = id.includes('-') || id.length > 10;
 
     for (let currentDomain of domains) {
       if (!currentDomain) continue;
       currentDomain = currentDomain.replace(/\/$/, '');
 
-      const paths = [`/play/${id}`, `/v/${id}`, `/movie/${id}`, `/embed/${id}`];
+      // 3. Generate Smart Paths
+      let paths = [`/play/${id}`, `/v/${id}`, `/movie/${id}`];
+
+      // If it's a TV show, add specific formats
+      if (isTV) {
+        const parts = id.split('-');
+        if (parts.length === 3) {
+          paths.unshift(`/embed/tv/${parts[0]}/${parts[1]}/${parts[2]}`);
+          paths.push(`/play/${parts[0]}-${parts[1]}-${parts[2]}`);
+        }
+      } else {
+        paths.unshift(`/embed/movie/${id}`); // Standard Global format
+      }
 
       for (const path of paths) {
         const targetUrl = `${currentDomain}${path}`;
@@ -51,32 +63,27 @@ export default async function getInfo(id: string) {
 
           const html = response.data.toString();
 
-          // IMPROVED EXTRACTION:
-          // 1. Try to find the file/playlist path. Search for 'file' or 'link' but exclude .js files.
-          // We look for patterns like file: "path" or link: "path"
+          // 4. Ultra-Aggressive Extraction
           let file: string | null = null;
           let key: string | null = null;
 
-          // Priority 1: Match 'file' or 'link' assignments (most reliable)
-          const playlistMatch = html.match(/["']?(?:file|link|source)["']?\s*[:=]\s*["']([^"']+\.(?:txt|m3u8|json|php)[^"']*)["']/i);
-          if (playlistMatch) {
-            file = playlistMatch[1];
-          } else {
-            // Priority 2: Fallback to a broader match but try to avoid script tags
-            const broadMatch = html.match(/["']?(?:file|link|source|url)["']?\s*[:=]\s*["']([^"']+)["']/i);
-            if (broadMatch && !broadMatch[1].endsWith('.js')) {
-              file = broadMatch[1];
-            }
-          }
+          // Priority 1: HLS/Manifest links (the gold standard)
+          const manifestMatch = html.match(/["']?(?:file|link|source|url|src)["']?\s*[:=]\s*["']([^"']+\.(?:txt|m3u8|json|php)[^"']*)["']/i);
 
-          const keyMatch = html.match(/["']?(?:key|token|csrf)["']?\s*[:=]\s*["']([^"']+)["']/i);
-          if (keyMatch) key = keyMatch[1];
+          // Priority 2: Streaming Object/Variable
+          const objectMatch = html.match(/["']?sources["']?\s*[:=]\s*\[\s*{\s*["']?file["']?\s*:\s*["']([^"']+)["']/i);
 
-          if (file && key) {
+          // Priority 3: CSRF/Security Key
+          const keyMatch = html.match(/["']?(?:key|token|csrf|hash|auth)["']?\s*[:=]\s*["']([^"']+)["']/i);
+
+          file = (manifestMatch ? manifestMatch[1] : (objectMatch ? objectMatch[1] : null));
+          key = keyMatch ? keyMatch[1] : "NOT_REQUIRED"; // Some fallback providers don't need a key
+
+          if (file && !file.endsWith('.js')) {
             file = file.replace(/\\\//g, "/");
             const playlistUrl = file.startsWith("http") ? file : `${currentDomain}${file}`;
 
-            console.log(`[getInfo] Found data Candidate! File: ${file} on ${currentDomain}`);
+            console.log(`[getInfo] Candidate Found! File: ${file.substring(0, 50)}...`);
 
             try {
               const playlistRes = await axios.get(playlistUrl, {
@@ -89,18 +96,19 @@ export default async function getInfo(id: string) {
               let data = playlistRes.data;
               let playlist: any[] = [];
 
-              // Handle base64 encoded strings
-              if (typeof data === 'string' && data.length > 30 && !data.includes('http') && !data.includes('{')) {
+              // Decode Base64 if needed
+              if (typeof data === 'string' && data.length > 50 && !data.includes('http') && !data.includes('{')) {
                 try {
                   const decoded = Buffer.from(data, 'base64').toString('utf-8');
-                  if (decoded.includes('http') || decoded.includes('{') || decoded.startsWith('[')) data = decoded;
+                  if (decoded.includes('http') || decoded.includes('{')) data = decoded;
                 } catch (e) { }
               }
 
+              // Parse list
               if (Array.isArray(data)) {
                 playlist = data;
               } else if (typeof data === 'object' && data !== null) {
-                playlist = data.playlist || data.data || [];
+                playlist = data.playlist || data.data || (data.sources ? data.sources : []);
               } else if (typeof data === 'string') {
                 const trimmed = data.trim();
                 if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
@@ -109,36 +117,31 @@ export default async function getInfo(id: string) {
                     playlist = Array.isArray(jsonData) ? jsonData : (jsonData.playlist || jsonData.data || []);
                   } catch (e) { }
                 }
-
                 if (playlist.length === 0 && (trimmed.includes('http') || trimmed.includes('.m3u8'))) {
                   playlist = [{ file: trimmed, label: 'Auto' }];
                 }
               }
 
               if (playlist.length > 0) {
-                console.log(`[getInfo] Success! Found ${playlist.length} tracks on ${currentDomain}`);
+                console.log(`[getInfo] Success! Found Stream on ${currentDomain}`);
                 return { success: true, data: { playlist, key } };
-              } else {
-                console.log(`[getInfo] Playlist rejected (empty/invalid) from ${currentDomain}`);
               }
             } catch (playlistErr: any) {
-              console.log(`[getInfo] Failed to load candidate playlist: ${playlistErr.message}`);
+              // Silence playlist 404s, keep searching
             }
           }
         } catch (e: any) {
-          if (e.response?.status !== 404) {
-            console.log(`[getInfo] Mirror connectivity issue: ${targetUrl} (${e.message})`);
-          }
+          // Skip 404s and keep searching other mirrors
         }
       }
     }
 
     return {
       success: false,
-      message: "Streaming provider is currently rotating domains or the IMDB ID is the wrong format for TV shows."
+      message: "Media not found on any mirror. Try providing ID in tt1234567-S-E format for TV shows."
     };
 
   } catch (error: any) {
-    return { success: false, message: `Fatal API Error: ${error.message}` };
+    return { success: false, message: `Scraper error: ${error.message}` };
   }
 }
