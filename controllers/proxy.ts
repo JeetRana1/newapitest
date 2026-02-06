@@ -51,11 +51,18 @@ export default async function proxy(req: Request, res: Response) {
             const uri = new URL(url);
             let referer = "https://allmovieland.link/";
 
-            // Slime and Vekna servers are very picky about Referers
+            // Dynamic Referer Intelligence
             if (url.includes('slime') || url.includes('vekna')) {
                 referer = `https://${url.includes('slime') ? 'vekna402las.com' : uri.host}/`;
             } else if (url.includes('vidsrc')) {
                 referer = "https://vidsrc.me/";
+            } else if (url.includes('vidlink')) {
+                referer = "https://vidlink.pro/";
+            } else if (url.includes('superembed')) {
+                referer = "https://superembed.stream/";
+            } else {
+                // Default: Use the host of the stream as the referer (often works)
+                referer = `https://${uri.host}/`;
             }
 
             return {

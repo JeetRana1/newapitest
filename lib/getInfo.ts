@@ -15,9 +15,11 @@ export default async function getInfo(id: string) {
       "https://allmovieland.io",
       "https://allmovieland.link",
       "https://new1.moviesdrive.surf",
-      "https://vidsrc.me",   // Global Backup 1
-      "https://vidsrc.pro",  // Global Backup 2
-      "https://superembed.stream" // Global Backup 3
+      "https://vidsrc.me",
+      "https://vidsrc.pro",
+      "https://vidsrc.xyz",   // Reliable Mirror 1
+      "https://vidlink.pro",  // Reliable Mirror 2 
+      "https://superembed.stream"
     ];
 
     const headers = {
