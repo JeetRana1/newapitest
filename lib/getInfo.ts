@@ -8,28 +8,13 @@ export default async function getInfo(id: string) {
   try {
     const playerUrl = await getPlayerUrl();
 
-    // 1. Expanded Domain List with High-Stability Backups
+    // 1. Curated High-Reliability Mirror List (Gold Standard Only)
     const domains = [
-      playerUrl,
-      "https://vekna402las.com",
-      "https://allmovieland.io",
-      "https://allmovieland.link",
-      "https://new1.moviesdrive.surf",
-      "https://vidsrc.me",
-      "https://vidsrc.pro",
-      "https://vidsrc.xyz",
-      "https://vidlink.pro",
-      "https://streamtape.com",
-      "https://vidcloud9.net",
-      "https://vidstreaming.io",
-      "https://mixdrop.co",
-      "https://vidmoli.to",
-      "https://vidtodo.com",
-      "https://vidmix.org",
-      "https://blink.pro",
-      "https://yourupload.com",
-      "https://ok.ru",
-      "https://superembed.stream"
+      "https://vidsrc.me",       // Primary - Very Stable
+      "https://vidsrc.pro",      // Secondary - Fast
+      "https://vidlink.pro",     // Backup - Reliable
+      "https://superembed.stream", // Backup - Good Quality
+      playerUrl // Dynamic Fallback
     ];
 
     const headers = {
