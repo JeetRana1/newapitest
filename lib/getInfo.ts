@@ -70,129 +70,130 @@ export default async function getInfo(id: string) {
       }
     }
 
-    const $ = cheerio.load(response.data);
+    const html = response.data;
+    console.log("HTML length:", html.length);
+    
+    // Log the first 1000 characters of the HTML to see what we're working with
+    console.log("HTML start:", html.substring(0, 1000));
+    
+    // Also log the end of the HTML
+    console.log("HTML end:", html.substring(Math.max(0, html.length - 1000)));
+    
+    const $ = cheerio.load(html);
 
     console.log("Looking for data in page...");
     console.log("Number of script tags found:", $("script").length);
 
-    // Simple approach: look for any script containing 'file' and 'key'
-    let scriptContent = null;
-    let matchedContent = null;
+    // Let's examine ALL scripts to see what's there
+    const scripts = $("script");
+    console.log("Examining all script tags:");
     
-    // Get all script elements
-    const scriptElements = $("script");
-    
-    // Loop through each script element
-    for (let i = 0; i < scriptElements.length; i++) {
-      const element = scriptElements[i];
+    for (let i = 0; i < scripts.length; i++) {
+      const element = scripts[i];
       const scriptText = $(element).html();
       
-      if (scriptText && scriptText.includes('file') && scriptText.includes('key')) {
-        // Look for JSON objects in the script
-        const jsonRegex = /\{[^{}]*file[^{}]*key[^{}]*\}|\{[^{}]*key[^{}]*file[^{}]*\}/g;
-        let match;
+      if (scriptText) {
+        console.log(`Script ${i} (${scriptText.length} chars): "${scriptText.substring(0, 200)}${scriptText.length > 200 ? '...' : ''}"`);
         
-        while ((match = jsonRegex.exec(scriptText)) !== null) {
-          const potentialObject = match[0];
+        // Look for any JSON-like structures in any script
+        const jsonPattern = /\{[^{}]*\}/g;
+        let match;
+        while ((match = jsonPattern.exec(scriptText)) !== null) {
           try {
-            const parsed = JSON.parse(potentialObject);
-            if (parsed.file && parsed.key) {
-              matchedContent = potentialObject;
-              scriptContent = scriptText;
-              console.log(`Found valid data in script ${i}:`, potentialObject.substring(0, 100) + '...');
-              break;
+            const obj = JSON.parse(match[0]);
+            console.log(`Found JSON object in script ${i}:`, obj);
+            
+            // Check if this object has the properties we need
+            if (obj.file || obj.key || obj.sources || obj.playlist) {
+              console.log(`Found relevant data in script ${i}:`, match[0]);
+              
+              const file = obj.file;
+              const key = obj.key;
+
+              // Ensure the link is absolute
+              const link = file?.startsWith("http") ? file : `${playerUrl.endsWith('/') ? playerUrl.slice(0, -1) : playerUrl}${file}`;
+
+              console.log(`Fetching playlist from: ${link}`);
+
+              const playlistRes = await axios.get(link, {
+                headers: {
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                  "Accept": "*/*",
+                  "Referer": targetUrl,
+                  "X-Csrf-Token": key
+                },
+                timeout: 15000
+              });
+
+              const playlist = Array.isArray(playlistRes.data)
+                ? playlistRes.data.filter((item: any) => item && (item.file || item.folder))
+                : [];
+
+              return {
+                success: true,
+                data: {
+                  playlist,
+                  key,
+                },
+              };
             }
           } catch (e) {
-            // Not valid JSON, continue searching
+            // Not valid JSON, continue
             continue;
           }
         }
-        
-        if (matchedContent) break; // Found what we need
       }
     }
 
-    // If still not found, try a broader search
-    if (!matchedContent) {
-      for (let i = 0; i < scriptElements.length; i++) {
-        const element = scriptElements[i];
-        const scriptText = $(element).html();
-        
-        if (scriptText) {
-          // Look for any JSON object that might contain the data
-          const jsonRegex = /\{[^{}]*["'](?:file|key)["'][^{}]*\}/g;
-          let match;
+    // If we still haven't found it, let's try a different approach
+    // Maybe the data is stored differently now
+    console.log("Trying alternative search methods...");
+    
+    // Look for inline JSON in the HTML that might not be in script tags
+    const inlineJsonPattern = /(\{[^{}]*file[^{}]*key[^{}]*\}|\{[^{}]*key[^{}]*file[^{}]*\})/g;
+    let inlineMatch;
+    while ((inlineMatch = inlineJsonPattern.exec(html)) !== null) {
+      try {
+        const obj = JSON.parse(inlineMatch[0]);
+        if (obj.file && obj.key) {
+          console.log("Found inline JSON data:", obj);
           
-          while ((match = jsonRegex.exec(scriptText)) !== null) {
-            const potentialObject = match[0];
-            try {
-              const parsed = JSON.parse(potentialObject);
-              if (parsed.file !== undefined || parsed.key !== undefined) {
-                matchedContent = potentialObject;
-                scriptContent = scriptText;
-                console.log(`Found potential data in script ${i}:`, potentialObject.substring(0, 100) + '...');
-                break;
-              }
-            } catch (e) {
-              // Not valid JSON, continue searching
-              continue;
-            }
-          }
-          
-          if (matchedContent) break; // Found what we need
+          const file = obj.file;
+          const key = obj.key;
+
+          // Ensure the link is absolute
+          const link = file?.startsWith("http") ? file : `${playerUrl.endsWith('/') ? playerUrl.slice(0, -1) : playerUrl}${file}`;
+
+          console.log(`Fetching playlist from: ${link}`);
+
+          const playlistRes = await axios.get(link, {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+              "Accept": "*/*",
+              "Referer": targetUrl,
+              "X-Csrf-Token": key
+            },
+            timeout: 15000
+          });
+
+          const playlist = Array.isArray(playlistRes.data)
+            ? playlistRes.data.filter((item: any) => item && (item.file || item.folder))
+            : [];
+
+          return {
+            success: true,
+            data: {
+              playlist,
+              key,
+            },
+          };
         }
+      } catch (e) {
+        continue;
       }
     }
 
-    if (!scriptContent || !matchedContent) {
-      console.log("Scripts on page:");
-      for (let i = 0; i < Math.min(5, scriptElements.length); i++) {
-        const element = scriptElements[i];
-        const scriptText = $(element).html();
-        if (scriptText && scriptText.length > 0) {
-          console.log(`Script ${i}:`, `"${scriptText.substring(0, 300)}${scriptText.length > 300 ? '...' : ''}"`);
-        }
-      }
-      return { success: false, message: "Could not find stream data script on page." };
-    }
-
-    let data;
-    try {
-      data = JSON.parse(matchedContent);
-    } catch (parseError) {
-      console.error("Failed to parse JSON:", matchedContent);
-      return { success: false, message: `Failed to parse stream data: ${(parseError as Error).message}` };
-    }
-
-    const file = data["file"];
-    const key = data["key"];
-
-    // Ensure the link is absolute
-    const link = file?.startsWith("http") ? file : `${playerUrl.endsWith('/') ? playerUrl.slice(0, -1) : playerUrl}${file}`;
-
-    console.log(`Fetching playlist from: ${link}`);
-
-    const playlistRes = await axios.get(link, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Accept": "*/*",
-        "Referer": targetUrl,
-        "X-Csrf-Token": key
-      },
-      timeout: 15000
-    });
-
-    const playlist = Array.isArray(playlistRes.data)
-      ? playlistRes.data.filter((item: any) => item && (item.file || item.folder))
-      : [];
-
-    return {
-      success: true,
-      data: {
-        playlist,
-        key,
-      },
-    };
+    return { success: false, message: "Could not find stream data script on page. Detailed logs provided." };
   } catch (error: any) {
     const errorUrl = error.config?.url || 'unknown url';
     console.error(`Error in getInfo at ${errorUrl}:`, error?.message || error);
