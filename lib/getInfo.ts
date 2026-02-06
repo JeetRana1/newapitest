@@ -139,8 +139,24 @@ export default async function getInfo(id: string) {
                 }
               }
 
+              // 4. PRE-VERIFY: Check if the stream actually plays before returning success
+              try {
+                const verifyRes = await axios.get(playlistUrl, {
+                  headers: { ...headers, "X-Csrf-Token": key, "Referer": targetUrl },
+                  httpAgent: torAgent,
+                  httpsAgent: torAgent,
+                  timeout: 5000,
+                  validateStatus: (status) => status < 400
+                });
+              } catch (e: any) {
+                if (e.response?.status === 403 || e.response?.status === 404) {
+                  console.log(`[getInfo] Mirror ${currentDomain} found a link, but it's dead (${e.response?.status}). Skipping...`);
+                  continue;
+                }
+              }
+
               if (playlist.length > 0) {
-                console.log(`[getInfo] Success! Found Stream on ${currentDomain}`);
+                console.log(`[getInfo] Success! Found verified stream on ${currentDomain}`);
 
                 // CRITICAL: Encode the referer into the file URLs so the Proxy knows how to "handshake"
                 const optimizedPlaylist = playlist.map((item: any) => {

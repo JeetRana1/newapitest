@@ -128,13 +128,14 @@ export default async function proxy(req: Request, res: Response) {
 
         // Set permissive CORS
         res.setHeader("Access-Control-Allow-Origin", "*");
-        res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+        res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS, POST");
         res.setHeader("Access-Control-Allow-Headers", "*");
+        res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Type, Date");
 
         let contentType = response.headers["content-type"];
 
         // 3. Recursive HLS Rewriting
-        if (isM3U8 || (contentType && contentType.includes('mpegurl'))) {
+        if (isM3U8 || (contentType && (contentType.includes('mpegurl') || contentType.includes('application/x-mpegURL')))) {
             let content = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
 
             if (!content.includes('#EXTM3U') && !targetUrl.includes('.txt')) {
