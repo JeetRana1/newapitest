@@ -7,10 +7,11 @@ export default async function getInfo(id: string) {
     const playerUrl = await getPlayerUrl();
     const targetUrl = `${playerUrl}/play/${id}`;
 
-    console.log(`Attempting to fetch from: ${targetUrl}`);
-    console.log(`Player URL resolved to: ${playerUrl}`);
+    console.log(`Resolved Player URL: ${playerUrl}`);
+    console.log(`Target URL: ${targetUrl}`);
 
     let response;
+    // Premium headers to mimic a real desktop browser
     const headers = {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
       "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -22,62 +23,49 @@ export default async function getInfo(id: string) {
       "Sec-Fetch-Mode": "navigate",
       "Sec-Fetch-Site": "none",
       "Sec-Fetch-User": "?1",
-      "Cache-Control": "max-age=0"
+      "DNT": "1"
     };
 
+    // Attempt 1: Standard Referer
     try {
       console.log(`Attempt 1: Fetching with AllMovieLand Referer...`);
       response = await axios.get(targetUrl, {
-        headers: {
-          ...headers,
-          "Referer": "https://allmovieland.link/",
-          "Origin": "https://allmovieland.link"
-        },
+        headers: { ...headers, "Referer": "https://allmovieland.link/" },
         timeout: 15000,
         validateStatus: (status) => status < 500
       });
-    } catch (e: any) {
-      console.log(`Attempt 1 failed: ${e.message}`);
-    }
+    } catch (e: any) { console.log(`Attempt 1 failed: ${e.message}`); }
 
+    // Attempt 2: Google Referer (Bypass attempt)
     if (!response || response.status === 404) {
       console.log("Attempt 2: Retrying with Google Referer...");
       try {
         response = await axios.get(targetUrl, {
-          headers: {
-            ...headers,
-            "Referer": "https://www.google.com/",
-          },
+          headers: { ...headers, "Referer": "https://www.google.com/" },
           timeout: 15000,
           validateStatus: (status) => status < 500
         });
-      } catch (e: any) {
-        console.log(`Attempt 2 failed: ${e.message}`);
-      }
+      } catch (e: any) { console.log(`Attempt 2 failed: ${e.message}`); }
     }
 
-    // Step 3: Fallback if everything so far failed
+    // Attempt 3: Fallback Domain
     if (!response || response.status === 404) {
       console.log(`Attempt 3: Trying hardcoded fallback URL...`);
       const fallbackUrl = `https://vekna402las.com/play/${id}`;
       try {
         response = await axios.get(fallbackUrl, {
-          headers: {
-            ...headers,
-            "Referer": "https://allmovieland.link/",
-            "Origin": "https://allmovieland.link"
-          },
+          headers: { ...headers, "Referer": "https://allmovieland.link/" },
           timeout: 15000
         });
       } catch (e: any) {
         console.log(`Attempt 3 failed: ${e.message}`);
-        throw new Error(`All attempts to fetch data failed. Last error: ${e.message}`);
+        throw new Error(`IP Blocked or Domain Dead. Last error: ${e.message}`);
       }
     }
 
     const html = response.data;
-    if (typeof html !== 'string') {
-      return { success: false, message: "Response is not in expected format" };
+    if (typeof html !== 'string' || html.length < 500) {
+      return { success: false, message: "Response too short or not HTML (likely blocked)" };
     }
 
     const $ = cheerio.load(html);

@@ -17,8 +17,8 @@ RUN npm ci --only=production
 RUN adduser -D myuser 
 USER myuser
 
-ENV PORT=3000 \
+ENV PORT=7860 \
     BASE_URL=https://allmovieland.link/player.js?v=60%20128
-EXPOSE 3000 
+EXPOSE 7860 
 
 CMD ["npm", "start"]  
