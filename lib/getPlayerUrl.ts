@@ -8,26 +8,35 @@ export async function getPlayerUrl() {
 
   const tryFetch = async (url: string) => {
     try {
+      console.log(`Attempting to fetch from: ${url}`);
       const res = await axios.get(url, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Accept': '*/*',
-          'Referer': 'https://google.com'
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Referer': 'https://google.com',
+          'Origin': 'https://google.com'
         },
-        timeout: 10000
+        timeout: 15000 // Increased timeout for Vercel
       });
+      console.log(`Successfully fetched from: ${url}, status: ${res.status}`);
+      
       const resText = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
       const playerUrlMatch = resText.match(/const AwsIndStreamDomain\s*=\s*'([^']+)'/);
 
       if (playerUrlMatch && playerUrlMatch[1]) {
         const domain = playerUrlMatch[1];
+        console.log(`Found player domain: ${domain} from URL: ${url}`);
         // Validate domain format and ensure it's not a known dead one
         if (domain.startsWith('http') && !domain.includes('protection-episode-i-222.site')) {
           return domain.endsWith('/') ? domain.slice(0, -1) : domain;
         }
+      } else {
+        console.log(`No player domain found in response from: ${url}`);
       }
       return null;
     } catch (e: any) {
+      console.log(`Failed to fetch from: ${url}`, e.message);
       return null;
     }
   };
@@ -50,11 +59,21 @@ export async function getPlayerUrl() {
     playerUrl = await tryFetch('https://allmovieland.io/player.js');
   }
 
-  // 5. Hardcoded fallback (as a last resort if all scraping fails)
+  // 5. Try alternative domains that might work better on Vercel
   if (!playerUrl) {
-    playerUrl = 'https://vekna402las.com';
+    playerUrl = await tryFetch('https://allmovieland.net/player.js');
+  }
+  
+  if (!playerUrl) {
+    playerUrl = await tryFetch('https://allmovieland.tv/player.js');
   }
 
-  console.log(`Resolved Player URL: ${playerUrl}`);
+  // 6. Hardcoded fallback (as a last resort if all scraping fails)
+  if (!playerUrl) {
+    playerUrl = 'https://vekna402las.com';
+    console.log('Using hardcoded fallback URL');
+  }
+
+  console.log(`Final Resolved Player URL: ${playerUrl}`);
   return playerUrl;
 }

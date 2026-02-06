@@ -10,13 +10,15 @@ export default async function mediaInfo(req: Request, res: Response) {
     });
   }
   try {
+    console.log(`Received request for ID: ${id}`);
     const data = await getInfo(id as string);
+    console.log(`Response data:`, data);
     res.json(data);
   } catch (err) {
-    console.log("error: ", err);
-    res.json({
+    console.log("error in mediaInfo: ", err);
+    res.status(500).json({
       success: false,
-      message: "Internal server error",
+      message: "Internal server error: " + (err instanceof Error ? err.message : String(err)),
     });
   }
 }
