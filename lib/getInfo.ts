@@ -68,7 +68,7 @@ export default async function getInfo(id: string) {
     });
 
     const playlist = Array.isArray(playlistRes.data)
-      ? playlistRes.data.filter((item: any) => item && item.file)
+      ? playlistRes.data.filter((item: any) => item && (item.file || item.folder))
       : [];
 
     return {

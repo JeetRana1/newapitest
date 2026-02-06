@@ -17,8 +17,8 @@ dotenv.config();
 app.use(express.json());
 
 const limiter = rateLimit({
-  windowMs: 5 * 60 * 1000, // 15 minutes
-  max: 10, // 100 requests per window
+  windowMs: 5 * 60 * 1000, // 5 minutes
+  max: 1000, // Increased limit for streaming usage
   message: "Too many requests, please try again later.",
 });
 if (process.env.RATE_LIMIT === "true") {
@@ -31,7 +31,8 @@ app.get("/", (req, res) => {
 
 const Port = process.env.PORT || 5001;
 
-if (process.env.NODE_ENV !== 'production') {
+// Only start server in development (not on Vercel)
+if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
   app.listen(Port, () => {
     console.log(`Server running on port ${Port}`);
   });

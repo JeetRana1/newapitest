@@ -14,8 +14,11 @@ export default async function getStream(req: Request, res: Response) {
   const path = f.slice(1) + ".txt";
   try {
     const playerUrl = await getPlayerUrl();
-    const origin = new URL(playerUrl).origin;
-    const link = await axios.get(`${playerUrl}/playlist/${path}`, {
+    // const origin = new URL(playerUrl).origin;
+    const playlistUrl = `${playerUrl}/playlist/${path}`;
+    console.log('Fetching playlist URL:', playlistUrl);
+    // fetch playlist with a timeout so the request fails fast if remote host is unresponsive
+    const linkRes = await axios.get(playlistUrl, {
       headers: {
         Accept: "*/*",
         "Accept-Encoding": "gzip, deflate, br",
@@ -24,7 +27,7 @@ export default async function getStream(req: Request, res: Response) {
         "Content-Length": "0",
         "Content-Type": "application/x-www-form-urlencoded",
         Dnt: "1",
-        Origin: origin,
+        Origin: "https://allmovieland.link",
         Pragma: "no-cache",
         "Sec-Ch-Ua":
           '"Not_A Brand";v="8", "Chromium";v="120", "Microsoft Edge";v="120"',
@@ -33,16 +36,18 @@ export default async function getStream(req: Request, res: Response) {
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
         "X-Csrf-Token": key,
-        Referer: `https://google.com/`,
+        Referer: "https://allmovieland.link/",
       },
+      timeout: 10000,
     });
+    console.log('Playlist response status:', linkRes.status);
+    console.log('Playlist response data (truncated):', String(linkRes.data).slice(0, 200));
     res.json({
       success: true,
       data: {
-        link: link.data,
+        link: linkRes.data,
       },
     });
   } catch (err) {
