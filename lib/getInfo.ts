@@ -21,7 +21,7 @@ export default async function getInfo(id: string) {
 
     const headers = {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-      "Referer": "https://allmovieland.link/", // Some mirrors are very sensitive to referer
+      "Referer": "https://allmovieland.link/",
       "Origin": "https://allmovieland.link",
       "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
       "Accept-Language": "en-US,en;q=0.9"
@@ -31,7 +31,6 @@ export default async function getInfo(id: string) {
       if (!currentDomain) continue;
       currentDomain = currentDomain.replace(/\/$/, '');
 
-      // Try path variants to handle provider updates
       const paths = [`/play/${id}`, `/movie/${id}`, `/v/${id}`, `/embed/${id}`];
 
       for (const path of paths) {
@@ -41,22 +40,9 @@ export default async function getInfo(id: string) {
 
           let response;
           try {
-            // Try direct fetch first (Koyeb IP) - 5 second timeout
-            response = await axios.get(targetUrl, {
-              headers,
-              timeout: 5000,
-              validateStatus: (s) => s === 200
-            });
+            response = await axios.get(targetUrl, { headers, timeout: 5000, validateStatus: (s) => s === 200 });
           } catch (e) {
-            // Fallback to Tor if direct fails/timed out
-            console.log(`[getInfo] Direct check failed for ${currentDomain}, attempting Tor...`);
-            response = await axios.get(targetUrl, {
-              headers,
-              httpAgent: torAgent,
-              httpsAgent: torAgent,
-              timeout: 15000,
-              validateStatus: (s) => s === 200
-            });
+            response = await axios.get(targetUrl, { headers, httpAgent: torAgent, httpsAgent: torAgent, timeout: 12000, validateStatus: (s) => s === 200 });
           }
 
           const html = response.data;
@@ -65,7 +51,6 @@ export default async function getInfo(id: string) {
           let file: string | null = null;
           let key: string | null = null;
 
-          // Scan all scripts for the streaming manifest and CSRF key
           $("script").each((_, el) => {
             const text = $(el).html() || "";
             if (!text) return;
@@ -78,22 +63,30 @@ export default async function getInfo(id: string) {
           });
 
           if (file && key) {
-            console.log(`[getInfo] Success! Found data on ${currentDomain}`);
             const fStr = file as string;
             const kStr = key as string;
             const playlistUrl = fStr.startsWith("http") ? fStr : `${currentDomain}${fStr}`;
 
-            // Final playlist retrieval - ALWAYS use Tor for the API data call to protect Koyeb IP
-            const playlistRes = await axios.get(playlistUrl, {
-              headers: {
-                ...headers,
-                "X-Csrf-Token": kStr,
-                "Referer": targetUrl
-              },
-              httpAgent: torAgent,
-              httpsAgent: torAgent,
-              timeout: 12000
-            });
+            console.log(`[getInfo] Data found! URL: ${playlistUrl}, Key: ${kStr.substring(0, 5)}...`);
+
+            // HYBRID FETCH for playlist:
+            let playlistRes;
+            try {
+              // Try direct first for speed
+              playlistRes = await axios.get(playlistUrl, {
+                headers: { ...headers, "X-Csrf-Token": kStr, "Referer": targetUrl },
+                timeout: 5000
+              });
+            } catch (e) {
+              // Fallback to Tor
+              console.log(`[getInfo] Playlist direct fetch failed, trying via Tor...`);
+              playlistRes = await axios.get(playlistUrl, {
+                headers: { ...headers, "X-Csrf-Token": kStr, "Referer": targetUrl },
+                httpAgent: torAgent,
+                httpsAgent: torAgent,
+                timeout: 12000
+              });
+            }
 
             let data = playlistRes.data;
             if (typeof data === 'string' && data.trim().startsWith('{')) {
@@ -104,13 +97,15 @@ export default async function getInfo(id: string) {
             const clean = playlist.filter((i: any) => i && (i.file || i.link));
 
             if (clean.length > 0) {
+              console.log(`[getInfo] Playlist validated! ${clean.length} tracks found.`);
               return { success: true, data: { playlist: clean, key: kStr } };
+            } else {
+              console.log(`[getInfo] Data extraction on ${currentDomain} returned empty playlist.`);
             }
           }
         } catch (e: any) {
-          // Log failures for debugging if it's not a standard 404
           if (e.response?.status !== 404) {
-            console.log(`[getInfo] Mirror failed: ${targetUrl} (${e.message})`);
+            console.log(`[getInfo] Mirror error on ${targetUrl}: ${e.message}`);
           }
         }
       }
