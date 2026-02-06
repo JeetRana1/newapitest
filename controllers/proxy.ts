@@ -43,31 +43,58 @@ export default async function proxy(req: Request, res: Response) {
     if (!targetUrl) return res.status(400).send("Proxy Error: No URL");
 
     try {
-        console.log(`[Proxy] Fetching: ${targetUrl}`);
-
-        // 2. Identify file types
+        // 2. Identify file types and generate smart headers
         const isM3U8 = targetUrl.includes('.m3u8') || targetUrl.includes('.txt');
         const isSegment = targetUrl.includes('.ts') || targetUrl.includes('.mp4');
 
-        // Always use Tor for reliability as providers block Koyeb IPs frequently
-        const response = await axios.get(targetUrl, {
-            headers: {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Referer": "https://allmovieland.link/", // Some CDNs want this
-                "Origin": "https://allmovieland.link",
-                "Accept": "*/*"
-            },
-            httpAgent: torAgent,
-            httpsAgent: torAgent,
-            responseType: isM3U8 ? 'text' : 'stream', // Buffer text, stream binary
-            timeout: 30000,
-            maxRedirects: 5,
-            validateStatus: (status) => status < 500
-        });
+        const getProxyHeaders = (url: string) => {
+            const uri = new URL(url);
+            let referer = "https://allmovieland.link/";
 
-        if (response.status >= 400) {
-            console.log(`[Proxy] Source returned ${response.status} for ${targetUrl}`);
-            return res.status(response.status).send(`Error from stream source: ${response.status}`);
+            // Slime and Vekna servers are very picky about Referers
+            if (url.includes('slime') || url.includes('vekna')) {
+                referer = `https://${url.includes('slime') ? 'vekna402las.com' : uri.host}/`;
+            } else if (url.includes('vidsrc')) {
+                referer = "https://vidsrc.me/";
+            }
+
+            return {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Referer": referer,
+                "Origin": referer.replace(/\/$/, ''),
+                "Accept": "*/*",
+                "Connection": "keep-alive"
+            };
+        };
+
+        const tryFetch = async (useTor: boolean) => {
+            return await axios.get(targetUrl, {
+                headers: getProxyHeaders(targetUrl),
+                httpAgent: useTor ? torAgent : undefined,
+                httpsAgent: useTor ? torAgent : undefined,
+                responseType: isM3U8 ? 'text' : 'stream',
+                timeout: isSegment ? 20000 : 30000, // Segments should be faster
+                maxRedirects: 5,
+                validateStatus: (status) => status < 400 // Only count 2xx/3xx as success
+            });
+        };
+
+        let response;
+        try {
+            // Priority 1: Tor (Security/Anonymity)
+            response = await tryFetch(true);
+        } catch (e: any) {
+            // Priority 2: Direct Fallback (If Tor is blocked by CDN or 403/404)
+            if (isSegment && (e.response?.status === 403 || e.response?.status === 404 || !e.response)) {
+                console.log(`[Proxy Fallback] Tor failed (${e.response?.status || 'Timeout'}). Trying direct fetch for segment...`);
+                try {
+                    response = await tryFetch(false);
+                } catch (fallbackErr: any) {
+                    throw fallbackErr;
+                }
+            } else {
+                throw e;
+            }
         }
 
         // Set permissive CORS

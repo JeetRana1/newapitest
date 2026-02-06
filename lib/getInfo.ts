@@ -26,9 +26,8 @@ export default async function getInfo(id: string) {
       "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     };
 
-    // 2. Intelligence: Detect if it's a TV show ID (e.g. tt1234567-1-1)
-    // If it's just a raw ID 'tt1234567', we try to guess Season 1 Episode 1 for TV shows
-    const isTV = id.includes('-') || id.length > 10;
+    // 2. Intelligence: Detect if it's a TV show ID or Missing Season/Ep
+    const isExplicitTV = id.includes('-');
 
     for (let currentDomain of domains) {
       if (!currentDomain) continue;
@@ -37,15 +36,21 @@ export default async function getInfo(id: string) {
       // 3. Generate Smart Paths
       let paths = [`/play/${id}`, `/v/${id}`, `/movie/${id}`];
 
-      // If it's a TV show, add specific formats
-      if (isTV) {
+      // If it looks like a series ID without season/ep, try to brute-force Season 1 Episode 1
+      if (!isExplicitTV && (currentDomain.includes('vidsrc') || currentDomain.includes('superembed'))) {
+        paths.unshift(`/embed/tv/${id}/1/1`);
+        paths.push(`/play/${id}-1-1`);
+      }
+
+      if (isExplicitTV) {
         const parts = id.split('-');
         if (parts.length === 3) {
           paths.unshift(`/embed/tv/${parts[0]}/${parts[1]}/${parts[2]}`);
+          paths.unshift(`/v/${parts[0]}/${parts[1]}/${parts[2]}`);
           paths.push(`/play/${parts[0]}-${parts[1]}-${parts[2]}`);
         }
-      } else {
-        paths.unshift(`/embed/movie/${id}`); // Standard Global format
+      } else if (!paths.includes(`/embed/movie/${id}`)) {
+        paths.unshift(`/embed/movie/${id}`);
       }
 
       for (const path of paths) {
