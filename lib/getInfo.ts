@@ -15,35 +15,34 @@ export default async function getInfo(id: string) {
       "https://allmovieland.link",
       "https://allmovieland.work",
       "https://allmovieland.site",
-      "https://allmovieland.io",
-      "https://allmovieland.net"
+      "https://allmovieland.io"
     ];
 
     const headers = {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
       "Referer": "https://allmovieland.link/",
-      "Origin": "https://allmovieland.link",
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-      "Accept-Language": "en-US,en;q=0.9"
+      "Origin": "https://allmovieland.link"
     };
 
     for (let currentDomain of domains) {
       if (!currentDomain) continue;
       currentDomain = currentDomain.replace(/\/$/, '');
 
-      const paths = [`/play/${id}`, `/movie/${id}`, `/v/${id}`, `/embed/${id}`];
+      const paths = [`/play/${id}`, `/movie/${id}`, `/embed/${id}`];
 
       for (const path of paths) {
         const targetUrl = `${currentDomain}${path}`;
         try {
           console.log(`[getInfo] Checking mirror: ${targetUrl}`);
 
-          let response;
-          try {
-            response = await axios.get(targetUrl, { headers, timeout: 5000, validateStatus: (s) => s === 200 });
-          } catch (e) {
-            response = await axios.get(targetUrl, { headers, httpAgent: torAgent, httpsAgent: torAgent, timeout: 12000, validateStatus: (s) => s === 200 });
-          }
+          // Use Tor for the initial page fetch and playlist - it was more stable before
+          const response = await axios.get(targetUrl, {
+            headers,
+            httpAgent: torAgent,
+            httpsAgent: torAgent,
+            timeout: 15000,
+            validateStatus: (s) => s === 200
+          });
 
           const html = response.data;
           const $ = cheerio.load(html);
@@ -55,8 +54,11 @@ export default async function getInfo(id: string) {
             const text = $(el).html() || "";
             if (!text) return;
 
-            const fMatch = text.match(/["'](?:file|link|source)["']\s*[:=]\s*["']([^"']+)["']/);
-            const kMatch = text.match(/["'](?:key)["']\s*[:=]\s*["']([^"']+)["']/);
+            // Unescape the script content to handle \/ in URLs
+            const unescapedText = text.replace(/\\/g, "");
+
+            const fMatch = unescapedText.match(/["'](?:file|link|source)["']\s*[:=]\s*["']([^"']+)["']/);
+            const kMatch = unescapedText.match(/["'](?:key)["']\s*[:=]\s*["']([^"']+)["']/);
 
             if (fMatch) file = fMatch[1];
             if (kMatch) key = kMatch[1];
@@ -67,26 +69,14 @@ export default async function getInfo(id: string) {
             const kStr = key as string;
             const playlistUrl = fStr.startsWith("http") ? fStr : `${currentDomain}${fStr}`;
 
-            console.log(`[getInfo] Data found! URL: ${playlistUrl}, Key: ${kStr.substring(0, 5)}...`);
+            console.log(`[getInfo] Found Playlist: ${playlistUrl}`);
 
-            // HYBRID FETCH for playlist:
-            let playlistRes;
-            try {
-              // Try direct first for speed
-              playlistRes = await axios.get(playlistUrl, {
-                headers: { ...headers, "X-Csrf-Token": kStr, "Referer": targetUrl },
-                timeout: 5000
-              });
-            } catch (e) {
-              // Fallback to Tor
-              console.log(`[getInfo] Playlist direct fetch failed, trying via Tor...`);
-              playlistRes = await axios.get(playlistUrl, {
-                headers: { ...headers, "X-Csrf-Token": kStr, "Referer": targetUrl },
-                httpAgent: torAgent,
-                httpsAgent: torAgent,
-                timeout: 12000
-              });
-            }
+            const playlistRes = await axios.get(playlistUrl, {
+              headers: { ...headers, "X-Csrf-Token": kStr, "Referer": targetUrl },
+              httpAgent: torAgent,
+              httpsAgent: torAgent,
+              timeout: 15000
+            });
 
             let data = playlistRes.data;
             if (typeof data === 'string' && data.trim().startsWith('{')) {
@@ -97,27 +87,18 @@ export default async function getInfo(id: string) {
             const clean = playlist.filter((i: any) => i && (i.file || i.link));
 
             if (clean.length > 0) {
-              console.log(`[getInfo] Playlist validated! ${clean.length} tracks found.`);
+              console.log(`[getInfo] Success on ${currentDomain}`);
               return { success: true, data: { playlist: clean, key: kStr } };
-            } else {
-              console.log(`[getInfo] Data extraction on ${currentDomain} returned empty playlist.`);
             }
           }
         } catch (e: any) {
-          if (e.response?.status !== 404) {
-            console.log(`[getInfo] Mirror error on ${targetUrl}: ${e.message}`);
-          }
+          // Silent fail for 404s
         }
       }
     }
 
-    return {
-      success: false,
-      message: "Streaming provider is currently rotating domains. Please refresh in 30 seconds."
-    };
-
+    return { success: false, message: "Stream not found. The provider might be updating. Please try again soon." };
   } catch (error: any) {
-    console.error(`[getInfo Fatal Error]`, error.message);
-    return { success: false, message: `API Connectivity Error: ${error.message}` };
+    return { success: false, message: `System Error: ${error.message}` };
   }
 }
