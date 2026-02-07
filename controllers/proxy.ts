@@ -102,20 +102,19 @@ export default async function proxy(req: Request, res: Response) {
                     referer = "https://vidlink.pro/";
                 } else if (url.includes('superembed')) {
                     referer = "https://superembed.stream/";
-                } else if (url.includes('lizer123')) {
-                    // specific fix for external audio hosts
-                    referer = "https://lizer123.site/";
                 } else {
                     referer = `https://${uri.host}/`;
                 }
             } else {
-                // If the proxyRef (e.g. vekna) doesn't match the current target host (e.g. lizer123),
-                // and the target is an external audio host, we must override the referer.
-                if (url.includes('lizer123') || url.includes('cdn')) {
-                    // check if cross-origin
-                    if (!url.includes(new URL(proxyRef).hostname)) {
+                // Generic Cross-Origin Handling
+                // If the target host differs from the proxy_ref host, fallback to target host
+                try {
+                    const proxyHost = new URL(proxyRef).hostname;
+                    if (!url.includes(proxyHost)) {
                         referer = `https://${uri.host}/`;
                     }
+                } catch (e) {
+                    referer = `https://${uri.host}/`;
                 }
             }
 
