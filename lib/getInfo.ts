@@ -5,6 +5,11 @@ import cache from './cache';
 
 const torAgent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
 
+const getErrorMessage = (err: unknown) => {
+  if (err instanceof Error) return err.message;
+  try { return JSON.stringify(err); } catch { return String(err); }
+};
+
 export default async function getInfo(id: string) {
   // Check cache first
   const cachedResult = cache.get(`getInfo_${id}`);
@@ -132,8 +137,8 @@ export default async function getInfo(id: string) {
                 } else {
                   // keep original JS if nothing found inside
                 }
-              } catch (e) {
-                console.log(`[getInfo] Failed to fetch/parse JS candidate ${file}: ${e.message}`);
+              } catch (e: unknown) {
+                console.log(`[getInfo] Failed to fetch/parse JS candidate ${file}: ${getErrorMessage(e)}`);
               }
             }
 
