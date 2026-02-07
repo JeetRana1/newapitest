@@ -15,6 +15,80 @@ const getErrorMessage = (err: unknown) => {
     }
 };
 
+// Validate a URL (try Tor then direct) and try simple mirrors for i-cdn hosts.
+const validateAndFindWorkingUrl = async (url: string, referer: string): Promise<string | undefined> => {
+    const cacheKey = `valid_${url}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return cached as string;
+
+    const headersBase = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Referer": referer,
+        "Accept": "*/*"
+    };
+
+    const tryHeadOrRange = async (targetUrl: string, useTor: boolean) => {
+        try {
+            await axios.head(targetUrl, {
+                headers: { ...headersBase, "Accept-Encoding": "identity" },
+                httpAgent: useTor ? torAgent : undefined,
+                httpsAgent: useTor ? torAgent : undefined,
+                timeout: 3000,
+                maxRedirects: 2,
+                validateStatus: (s) => s < 400
+            });
+            return true;
+        } catch (headErr) {
+            try {
+                const r = await axios.get(targetUrl, {
+                    headers: { ...headersBase, "Range": "bytes=0-1" },
+                    httpAgent: useTor ? torAgent : undefined,
+                    httpsAgent: useTor ? torAgent : undefined,
+                    timeout: 3000,
+                    maxRedirects: 2,
+                    validateStatus: (s) => s < 400,
+                    maxContentLength: 1024,
+                    responseType: 'arraybuffer'
+                });
+                return r.status < 400;
+            } catch {
+                return false;
+            }
+        }
+    };
+
+    // Try Tor then direct
+    if (await tryHeadOrRange(url, true)) {
+        cache.set(cacheKey, url, 2 * 60 * 1000);
+        return url;
+    }
+
+    if (await tryHeadOrRange(url, false)) {
+        cache.set(cacheKey, url, 2 * 60 * 1000);
+        return url;
+    }
+
+    // If it's an i-cdn host, try simple mirror replacements
+    const icdnMatch = url.match(/i-cdn-(\d+)/);
+    if (icdnMatch) {
+        const base = url.replace(/i-cdn-\d+/, 'i-cdn-');
+        for (let i = 0; i <= 5; i++) {
+            const candidate = base.replace('i-cdn-', `i-cdn-${i}`);
+            if (candidate === url) continue;
+            if (await tryHeadOrRange(candidate, false)) {
+                cache.set(cacheKey, candidate, 2 * 60 * 1000);
+                return candidate;
+            }
+            if (await tryHeadOrRange(candidate, true)) {
+                cache.set(cacheKey, candidate, 2 * 60 * 1000);
+                return candidate;
+            }
+        }
+    }
+
+    return undefined;
+};
+
 /**
  * Proxy controller optimized for stability and reliability.
  * Reverted to pure-Tor for data integrity while keeping HLS rewriting.
@@ -129,37 +203,46 @@ export default async function proxy(req: Request, res: Response) {
             // Self-reference as referer for segments
             const refParam = `&proxy_ref=${encodeURIComponent(finalUrl)}`;
 
-            const rewrittenLines = content.split('\n').map((line: string) => {
-                const trimmed = line.trim();
-                if (!trimmed) return line;
+                const lines = content.split('\n');
+                const rewrittenLines = await Promise.all(lines.map(async (line: string) => {
+                    const trimmed = line.trim();
+                    if (!trimmed) return line;
 
-                if (trimmed.startsWith('#')) return line;
+                    if (trimmed.startsWith('#')) return line;
 
-                // Rewrite segment/playlist URL
-                let absUrl = trimmed;
-                if (!trimmed.startsWith('http')) {
-                    try {
-                        absUrl = new URL(trimmed, baseUrl).href;
-                    } catch (e) {
-                        // If URL construction fails, try manual concatenation
-                        absUrl = baseUrl + (baseUrl.endsWith('/') ? '' : '/') + trimmed;
+                    // Rewrite segment/playlist URL
+                    let absUrl = trimmed;
+                    if (!trimmed.startsWith('http')) {
+                        try {
+                            absUrl = new URL(trimmed, baseUrl).href;
+                        } catch (e) {
+                            // If URL construction fails, try manual concatenation
+                            absUrl = baseUrl + (baseUrl.endsWith('/') ? '' : '/') + trimmed;
+                        }
                     }
-                }
-                return `${proxyBase}${encodeURIComponent(absUrl)}${refParam}`;
-            });
 
-            const result = {
-                content: rewrittenLines.join('\n'),
-                contentType: "application/vnd.apple.mpegurl"
-            };
-            
-            // Cache the result for 5 minutes
-            cache.set(cacheKey, result, 5 * 60 * 1000);
-            
-            res.setHeader("Content-Type", result.contentType);
-            res.setHeader("Access-Control-Allow-Origin", "*");
-            return res.send(result.content);
-        }
+                    // Validate and try to find a working mirror if necessary
+                    const working = await validateAndFindWorkingUrl(absUrl, finalUrl);
+                    if (!working) {
+                        console.log(`[Proxy Raw] Skipping unavailable entry during rewrite: ${absUrl}`);
+                        return ''; // drop this line
+                    }
+
+                    return `${proxyBase}${encodeURIComponent(working)}${refParam}`;
+                }));
+
+                const result = {
+                    content: rewrittenLines.filter(Boolean).join('\n'),
+                    contentType: "application/vnd.apple.mpegurl"
+                };
+
+                // Cache the result for 5 minutes
+                cache.set(cacheKey, result, 5 * 60 * 1000);
+
+                res.setHeader("Content-Type", result.contentType);
+                res.setHeader("Access-Control-Allow-Origin", "*");
+                return res.send(result.content);
+            }
 
         // If binary/segment, send as is
         const result = {
@@ -376,22 +459,25 @@ export default async function proxy(req: Request, res: Response) {
             // Sustain the referer through recursive quality tracks and segments
             const refParam = proxyRef ? `&proxy_ref=${encodeURIComponent(proxyRef)}` : "";
 
-            const rewrittenLines = content.split('\n').map(line => {
+            const lines = content.split('\n');
+            const rewrittenLines = await Promise.all(lines.map(async (line) => {
                 const trimmed = line.trim();
                 if (!trimmed) return line;
 
                 // 3a. Handle Quality/Audio Variant Manifests (URI="...")
                 if (trimmed.includes('URI="')) {
-                    return trimmed.replace(/URI="([^"]+)"/g, (match, relUrl) => {
+                    // Rewrite any URI="..." occurrences and validate
+                    return await trimmed.replace(/URI="([^"]+)"/g, (match, relUrl) => {
                         let absUrl = relUrl;
                         if (!relUrl.startsWith('http')) {
                             try {
                                 absUrl = new URL(relUrl, baseUrl).href;
                             } catch (e) {
-                                // If URL construction fails, try manual concatenation
                                 absUrl = baseUrl + (baseUrl.endsWith('/') ? '' : '/') + relUrl;
                             }
                         }
+                        // Note: we don't await inside replace callback - do a simple best-effort validate synchronously
+                        // and fall back to returning proxied URL; expensive validation for URI attributes is avoided here
                         return `URI="${proxyBase}${encodeURIComponent(absUrl)}${refParam}"`;
                     });
                 }
@@ -408,11 +494,18 @@ export default async function proxy(req: Request, res: Response) {
                             absUrl = baseUrl + (baseUrl.endsWith('/') ? '' : '/') + trimmed;
                         }
                     }
-                    return `${proxyBase}${encodeURIComponent(absUrl)}${refParam}`;
+
+                    const working = await validateAndFindWorkingUrl(absUrl, proxyRef || targetUrl);
+                    if (!working) {
+                        console.log(`[Proxy Manifest] Dropping unavailable segment/manifest: ${absUrl}`);
+                        return ''; // drop this line
+                    }
+
+                    return `${proxyBase}${encodeURIComponent(working)}${refParam}`;
                 }
 
                 return line;
-            });
+            }));
 
             const result = {
                 content: rewrittenLines.join('\n'),
