@@ -223,7 +223,7 @@ export default async function proxy(req: Request, res: Response) {
 
                     // Validate and try to find a working mirror if necessary
                     // For manifest rewrites, prefer quick direct checks (avoid Tor for speed) and limit mirrors
-                    const working = await validateAndFindWorkingUrl(absUrl, finalUrl, { useTorFirst: false, timeoutMs: 1000, maxMirrors: 2 });
+                    const working = await validateAndFindWorkingUrl(absUrl, finalUrl, { useTorFirst: false, timeoutMs: 2000, maxMirrors: 3 });
                     if (!working) {
                         console.log(`[Proxy Raw] Skipping unavailable entry during rewrite (fast-check): ${absUrl}`);
                         return ''; // drop this line
