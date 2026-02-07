@@ -40,8 +40,9 @@ export default async function proxy(req: Request, res: Response) {
             return res.send(cachedResult.content);
         }
         
+        let rawRes: any;
         try {
-            const rawRes = await axios.get(targetUrl, {
+            rawRes = await axios.get(targetUrl, {
                 responseType: 'arraybuffer', // Fetch as buffer to inspect content
                 headers: {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -59,69 +60,101 @@ export default async function proxy(req: Request, res: Response) {
                 maxRedirects: 5,
                 validateStatus: (status) => status < 400
             });
-
-            // Handle Redirections properly
-            const finalUrl = rawRes.request.res.responseUrl || targetUrl;
-            const contentType = rawRes.headers['content-type'];
-
-            // If it's a manifest, we MUST rewrite it to fix relative paths
-            if (contentType && (contentType.includes('mpegurl') || contentType.includes('application/x-mpegURL') || finalUrl.includes('.m3u8'))) {
-                console.log(`[Proxy Raw] Detected Manifest in Passthrough. Rewriting from ${finalUrl}...`);
-                let content = rawRes.data.toString('utf-8');
-                const baseUrl = finalUrl.substring(0, finalUrl.lastIndexOf('/') + 1);
-                // Self-reference as referer for segments
-                const refParam = `&proxy_ref=${encodeURIComponent(finalUrl)}`;
-
-                const rewrittenLines = content.split('\n').map((line: string) => {
-                    const trimmed = line.trim();
-                    if (!trimmed) return line;
-
-                    if (trimmed.startsWith('#')) return line;
-
-                    // Rewrite segment/playlist URL
-                    let absUrl = trimmed;
-                    if (!trimmed.startsWith('http')) {
-                        try {
-                            absUrl = new URL(trimmed, baseUrl).href;
-                        } catch (e) {
-                            // If URL construction fails, try manual concatenation
-                            absUrl = baseUrl + (baseUrl.endsWith('/') ? '' : '/') + trimmed;
-                        }
-                    }
-                    return `${proxyBase}${encodeURIComponent(absUrl)}${refParam}`;
+        } catch (err: unknown) {
+            console.log(`[Proxy Raw] Tor fetch failed for ${targetUrl}: ${getErrorMessage(err)}. Trying direct...`);
+            try {
+                rawRes = await axios.get(targetUrl, {
+                    responseType: 'arraybuffer',
+                    headers: {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                        "Accept": "*/*",
+                        "Accept-Language": "en-US,en;q=0.9",
+                        "Sec-Fetch-Dest": "empty",
+                        "Sec-Fetch-Mode": "cors",
+                        "Sec-Fetch-Site": "cross-site",
+                        "Pragma": "no-cache",
+                        "Cache-Control": "no-cache"
+                    },
+                    timeout: 20000,
+                    maxRedirects: 5,
+                    validateStatus: (status) => status < 400
                 });
-
-                const result = {
-                    content: rewrittenLines.join('\n'),
-                    contentType: "application/vnd.apple.mpegurl"
-                };
-                
-                // Cache the result for 5 minutes
-                cache.set(cacheKey, result, 5 * 60 * 1000);
-                
-                res.setHeader("Content-Type", result.contentType);
-                res.setHeader("Access-Control-Allow-Origin", "*");
-                return res.send(result.content);
+            } catch (err2: unknown) {
+                let details = getErrorMessage(err2);
+                if (axios.isAxiosError(err2)) {
+                    const status = err2.response?.status;
+                    let dataSnippet = '';
+                    try {
+                        dataSnippet = typeof err2.response?.data === 'string' ? err2.response?.data.substring(0, 200) : JSON.stringify(err2.response?.data).substring(0, 200);
+                    } catch {
+                        dataSnippet = '[unserializable response data]';
+                    }
+                    details = `status=${status} data=${dataSnippet} message=${getErrorMessage(err2)}`;
+                }
+                console.log(`[Proxy Raw] Direct fetch also failed for ${targetUrl}: ${details}`);
+                return res.status(500).send(`Stream Error: ${details}`);
             }
+        }
 
-            // If binary/segment, send as is
+        // Handle Redirections properly
+        const finalUrl = rawRes.request.res.responseUrl || targetUrl;
+        const contentType = rawRes.headers['content-type'];
+
+        // If it's a manifest, we MUST rewrite it to fix relative paths
+        if (contentType && (contentType.includes('mpegurl') || contentType.includes('application/x-mpegURL') || finalUrl.includes('.m3u8'))) {
+            console.log(`[Proxy Raw] Detected Manifest in Passthrough. Rewriting from ${finalUrl}...`);
+            let content = rawRes.data.toString('utf-8');
+            const baseUrl = finalUrl.substring(0, finalUrl.lastIndexOf('/') + 1);
+            // Self-reference as referer for segments
+            const refParam = `&proxy_ref=${encodeURIComponent(finalUrl)}`;
+
+            const rewrittenLines = content.split('\n').map((line: string) => {
+                const trimmed = line.trim();
+                if (!trimmed) return line;
+
+                if (trimmed.startsWith('#')) return line;
+
+                // Rewrite segment/playlist URL
+                let absUrl = trimmed;
+                if (!trimmed.startsWith('http')) {
+                    try {
+                        absUrl = new URL(trimmed, baseUrl).href;
+                    } catch (e) {
+                        // If URL construction fails, try manual concatenation
+                        absUrl = baseUrl + (baseUrl.endsWith('/') ? '' : '/') + trimmed;
+                    }
+                }
+                return `${proxyBase}${encodeURIComponent(absUrl)}${refParam}`;
+            });
+
             const result = {
-                content: rawRes.data,
-                contentType: contentType || 'application/vnd.apple.mpegurl'
+                content: rewrittenLines.join('\n'),
+                contentType: "application/vnd.apple.mpegurl"
             };
             
             // Cache the result for 5 minutes
             cache.set(cacheKey, result, 5 * 60 * 1000);
             
-            res.setHeader("Access-Control-Allow-Origin", "*");
-            res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
             res.setHeader("Content-Type", result.contentType);
-
-            return res.status(200).send(result.content);
-        } catch (e: any) {
-            console.log(`[Proxy Raw] Failed: ${e.message}`);
-            return res.status(500).send("Stream Error");
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            return res.send(result.content);
         }
+
+        // If binary/segment, send as is
+        const result = {
+            content: rawRes.data,
+            contentType: contentType || 'application/vnd.apple.mpegurl'
+        };
+        
+        // Cache the result for 5 minutes
+        cache.set(cacheKey, result, 5 * 60 * 1000);
+        
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+        res.setHeader("Content-Type", result.contentType);
+
+        return res.status(200).send(result.content);
+
     }
 
     // 1. Root Trap: Handle relative stream requests
