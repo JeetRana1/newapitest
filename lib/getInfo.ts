@@ -142,7 +142,7 @@ export default async function getInfo(id: string) {
 
                 // 4. PRE-VERIFY: Check if the stream actually plays before returning success
                 try {
-                  const verifyRes = await axios.get(playlistUrl, {
+                  const verifyRes = await axios.head(playlistUrl, {
                     headers: { ...headers, "X-Csrf-Token": key, "Referer": targetUrl },
                     httpAgent: torAgent,
                     httpsAgent: torAgent,
@@ -153,6 +153,9 @@ export default async function getInfo(id: string) {
                   if (e.response?.status === 403 || e.response?.status === 404) {
                     console.log(`[getInfo] Mirror ${currentDomain} found a link, but it's dead (${e.response?.status}). Skipping...`);
                     continue;
+                  } else {
+                    // For other errors (like 405 Method Not Allowed for HEAD), continue anyway
+                    console.log(`[getInfo] Mirror ${currentDomain} found a link, HEAD verification failed (${e.message}), but continuing...`);
                   }
                 }
 

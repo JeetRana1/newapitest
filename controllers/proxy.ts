@@ -6,6 +6,15 @@ import cache from "../lib/cache";
 
 const torAgent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
 
+const getErrorMessage = (err: unknown) => {
+    if (err instanceof Error) return err.message;
+    try {
+        return JSON.stringify(err);
+    } catch {
+        return String(err);
+    }
+};
+
 /**
  * Proxy controller optimized for stability and reliability.
  * Reverted to pure-Tor for data integrity while keeping HLS rewriting.
@@ -18,8 +27,8 @@ export default async function proxy(req: Request, res: Response) {
 
     // 0. Safety Valve: Smart Passthrough for Fragile Audio Providers (via Tor)
     // If we detect lizer123 or similar audio hosts, we turn off all "smart" features and use Tor
-    if (targetUrl && (targetUrl.includes('lizer123') || targetUrl.includes('getm3u8'))) {
-        console.log(`[Proxy Raw] Tor Passthrough for fragile audio: ${targetUrl}`);
+    if (targetUrl && (targetUrl.includes('lizer123') || targetUrl.includes('getm3u8') || targetUrl.includes('slime403heq'))) {
+        console.log(`[Proxy Raw] Tor Passthrough for fragile stream: ${targetUrl}`);
         
         // Check cache for this specific URL
         const cacheKey = `proxy_${targetUrl}`;
@@ -70,7 +79,15 @@ export default async function proxy(req: Request, res: Response) {
                     if (trimmed.startsWith('#')) return line;
 
                     // Rewrite segment/playlist URL
-                    const absUrl = trimmed.startsWith('http') ? trimmed : new URL(trimmed, baseUrl).href;
+                    let absUrl = trimmed;
+                    if (!trimmed.startsWith('http')) {
+                        try {
+                            absUrl = new URL(trimmed, baseUrl).href;
+                        } catch (e) {
+                            // If URL construction fails, try manual concatenation
+                            absUrl = baseUrl + (baseUrl.endsWith('/') ? '' : '/') + trimmed;
+                        }
+                    }
                     return `${proxyBase}${encodeURIComponent(absUrl)}${refParam}`;
                 });
 
@@ -103,7 +120,7 @@ export default async function proxy(req: Request, res: Response) {
             return res.status(200).send(result.content);
         } catch (e: any) {
             console.log(`[Proxy Raw] Failed: ${e.message}`);
-            return res.status(500).send("Audio Stream Error");
+            return res.status(500).send("Stream Error");
         }
     }
 
@@ -158,7 +175,16 @@ export default async function proxy(req: Request, res: Response) {
         isSegment = targetUrl.includes('.ts') || targetUrl.includes('.mp4');
 
         const getProxyHeaders = (url: string) => {
-            const uri = new URL(url);
+            let hostname = '';
+            try {
+                const uri = new URL(url);
+                hostname = uri.hostname;
+            } catch (e) {
+                // If URL parsing fails, extract hostname manually
+                const match = url.match(/^https?:\/\/([^\/\?#]+)/i);
+                hostname = match ? match[1] : 'localhost';
+            }
+            
             // Use the hint from the query param if available - MOST RELIABLE
             // This bypasses the need for the frontend to set tricky headers
             let referer = proxyRef || "https://allmovieland.link/";
@@ -166,7 +192,7 @@ export default async function proxy(req: Request, res: Response) {
             if (!proxyRef) {
                 // Dynamic Referer Intelligence (Fallback only)
                 if (url.includes('slime') || url.includes('vekna')) {
-                    referer = `https://${url.includes('slime') ? 'vekna402las.com' : uri.host}/`;
+                    referer = `https://${url.includes('slime') ? 'vekna402las.com' : hostname}/`;
                 } else if (url.includes('vidsrc')) {
                     referer = "https://vidsrc.me/";
                 } else if (url.includes('vidlink')) {
@@ -174,18 +200,23 @@ export default async function proxy(req: Request, res: Response) {
                 } else if (url.includes('superembed')) {
                     referer = "https://superembed.stream/";
                 } else {
-                    referer = `https://${uri.host}/`;
+                    referer = `https://${hostname}/`;
                 }
             } else {
                 // Generic Cross-Origin Handling
                 // If the target host differs from the proxy_ref host, fallback to target host
+                let proxyHostname = '';
                 try {
-                    const proxyHost = new URL(proxyRef).hostname;
-                    if (!url.includes(proxyHost)) {
-                        referer = `https://${uri.host}/`;
-                    }
+                    const proxyUri = new URL(proxyRef);
+                    proxyHostname = proxyUri.hostname;
                 } catch (e) {
-                    referer = `https://${uri.host}/`;
+                    // If URL parsing fails, extract hostname manually
+                    const match = proxyRef.match(/^https?:\/\/([^\/\?#]+)/i);
+                    proxyHostname = match ? match[1] : '';
+                }
+                
+                if (!url.includes(proxyHostname)) {
+                    referer = `https://${hostname}/`;
                 }
             }
 
@@ -205,20 +236,25 @@ export default async function proxy(req: Request, res: Response) {
                 "DNT": "1",
                 "Pragma": "no-cache",
                 "Cache-Control": "no-cache",
-                "Host": uri.host
+                "Host": hostname
             };
         };
 
         const tryFetch = async (useTor: boolean) => {
-            return await axios.get(targetUrl, {
-                headers: getProxyHeaders(targetUrl),
-                httpAgent: useTor ? torAgent : undefined,
-                httpsAgent: useTor ? torAgent : undefined,
-                responseType: isM3U8 ? 'text' : 'stream',
-                timeout: isSegment ? 20000 : 30000, // Segments should be faster
-                maxRedirects: 5,
-                validateStatus: (status) => status < 400 // Only count 2xx/3xx as success
-            });
+            try {
+                return await axios.get(targetUrl, {
+                    headers: getProxyHeaders(targetUrl),
+                    httpAgent: useTor ? torAgent : undefined,
+                    httpsAgent: useTor ? torAgent : undefined,
+                    responseType: isM3U8 ? 'text' : 'stream',
+                    timeout: isSegment ? 20000 : 30000, // Segments should be faster
+                    maxRedirects: 5,
+                    validateStatus: (status) => status < 400 // Only count 2xx/3xx as success
+                });
+            } catch (error: unknown) {
+                console.log(`[tryFetch] Error fetching ${targetUrl}:`, getErrorMessage(error));
+                throw error;
+            }
         };
 
         let response;
@@ -237,15 +273,16 @@ export default async function proxy(req: Request, res: Response) {
                     response = await tryFetch(true);
                 }
             } else {
-                // Manifests always try Tor first for privacy
+                // For manifests and other stream types, try both approaches
                 try {
-                    response = await tryFetch(true);
-                } catch (e) {
-                    console.log(`[Proxy Fallback] Tor failed for manifest. Trying direct...`);
-                    response = await tryFetch(false);
+                    response = await tryFetch(true); // Try Tor first
+                } catch (torError: unknown) {
+                    console.log(`[Proxy Fallback] Tor failed (${getErrorMessage(torError)}). Trying direct...`);
+                    response = await tryFetch(false); // Fall back to direct
                 }
             }
         } catch (finalErr: any) {
+            console.log(`[Proxy] Both Tor and direct failed for ${targetUrl}: ${finalErr.message}`);
             throw finalErr;
         }
 
@@ -275,14 +312,7 @@ export default async function proxy(req: Request, res: Response) {
             }
 
             if (!content.includes('#EXTM3U') && !targetUrl.includes('.txt')) {
-                const result = {
-                    content: content,
-                    contentType: contentType || "application/vnd.apple.mpegurl"
-                };
-                
-                // Cache the result for 5 minutes
-                cache.set(cacheKey, result, 5 * 60 * 1000);
-                
+                // For non-manifest content, send directly without caching for binary data
                 return res.send(content);
             }
 
@@ -299,7 +329,15 @@ export default async function proxy(req: Request, res: Response) {
                 // 3a. Handle Quality/Audio Variant Manifests (URI="...")
                 if (trimmed.includes('URI="')) {
                     return trimmed.replace(/URI="([^"]+)"/g, (match, relUrl) => {
-                        const absUrl = relUrl.startsWith('http') ? relUrl : new URL(relUrl, baseUrl).href;
+                        let absUrl = relUrl;
+                        if (!relUrl.startsWith('http')) {
+                            try {
+                                absUrl = new URL(relUrl, baseUrl).href;
+                            } catch (e) {
+                                // If URL construction fails, try manual concatenation
+                                absUrl = baseUrl + (baseUrl.endsWith('/') ? '' : '/') + relUrl;
+                            }
+                        }
                         return `URI="${proxyBase}${encodeURIComponent(absUrl)}${refParam}"`;
                     });
                 }
@@ -307,7 +345,15 @@ export default async function proxy(req: Request, res: Response) {
                 // 3b. Handle Fragmented Video Segments (.ts) or Sub-Manifests
                 // CRITICAL: Filter out garbage lines like "7" or non-file lines
                 if (!trimmed.startsWith('#') && (trimmed.includes('/') || trimmed.includes('.ts') || trimmed.includes('.m3u8') || trimmed.length > 5)) {
-                    const absUrl = trimmed.startsWith('http') ? trimmed : new URL(trimmed, baseUrl).href;
+                    let absUrl = trimmed;
+                    if (!trimmed.startsWith('http')) {
+                        try {
+                            absUrl = new URL(trimmed, baseUrl).href;
+                        } catch (e) {
+                            // If URL construction fails, try manual concatenation
+                            absUrl = baseUrl + (baseUrl.endsWith('/') ? '' : '/') + trimmed;
+                        }
+                    }
                     return `${proxyBase}${encodeURIComponent(absUrl)}${refParam}`;
                 }
 
@@ -327,32 +373,23 @@ export default async function proxy(req: Request, res: Response) {
 
         // 4. Handle Binary/Segment Data (Piping)
         const responseContentType = contentType || (isSegment ? "video/mp2t" : "application/octet-stream");
-        
+
         // Ensure accurate content length if provided
         if (response.headers["content-length"]) {
             res.setHeader("Content-Length", response.headers["content-length"]);
         }
-        
-        // For binary data, we can't cache it directly since it's streamed
-        // But we can cache metadata about the response
-        const result = {
-            content: response.data,
-            contentType: responseContentType
-        };
-        
-        // Cache the result for 5 minutes
-        cache.set(cacheKey, result, 5 * 60 * 1000);
 
         res.setHeader("Content-Type", responseContentType);
+        
+        // For binary data, we can't cache it directly since it's a stream
+        // So we pipe it directly without caching
         response.data.pipe(res);
 
     } catch (error: any) {
-        // Only log fatal errors for manifests (crucial for debugging)
-        // Silence segment errors as they are retried or handled by the player
-        if (!isSegment) {
-            console.error(`[Proxy Fatal] ${error.message} for ${targetUrl}`);
-        }
-
+        // Log errors with more detail
+        console.error(`[Proxy Fatal] ${error.message} for ${targetUrl}`);
+        console.error(`[Proxy Error Details] Status: ${error.response?.status}, Data: ${typeof error.response?.data === 'string' ? error.response?.data.substring(0, 200) : 'non-string data'}`);
+        
         if (!res.headersSent) {
             res.status(500).send("Proxy connectivity issues. Please try refreshing.");
         }

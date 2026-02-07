@@ -9,13 +9,14 @@ const torAgent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
 
 // Function to validate if a stream URL is accessible
 async function validateStreamUrl(url: string, referer: string): Promise<boolean> {
-  // Try HEAD request first (more efficient)
+  // Try HEAD request first (more lenient validation)
   try {
     const response = await axios.head(url, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
         "Referer": referer,
         "Accept": "*/*",
+        "Accept-Encoding": "identity" // Prevent compression that might interfere with HEAD requests
       },
       httpAgent: torAgent,
       httpsAgent: torAgent,
@@ -24,28 +25,12 @@ async function validateStreamUrl(url: string, referer: string): Promise<boolean>
       validateStatus: (status) => status < 400 // Accept 2xx and 3xx as valid
     });
 
-    // Check if the response is likely a valid stream
-    const contentType = response.headers['content-type'];
-
-    // Valid stream content types
-    const validContentTypes = [
-      'application/vnd.apple.mpegurl', // m3u8
-      'application/x-mpegurl',         // m3u8
-      'application/dash+xml',          // mpd
-      'video/',                        // any video type
-      'application/octet-stream',      // generic binary
-      'binary/'                        // generic binary
-    ];
-
-    const isValidContentType = validContentTypes.some(type =>
-      contentType && contentType.toLowerCase().includes(type)
-    );
-
-    // If content type is valid or if we can't determine (HEAD request might not return it), consider it valid
-    return isValidContentType || !contentType;
+    // If we get any response without error, consider it valid
+    // Some streaming services don't return proper content-type in HEAD requests
+    return true;
   } catch (headError) {
-    // If HEAD fails, try a minimal GET request with range header to check validity
-    console.log(`[validateStreamUrl] HEAD request failed for ${url}, trying GET with Range header...`);
+    // If HEAD fails, try a minimal GET request to check if the URL is accessible
+    console.log(`[validateStreamUrl] HEAD request failed for ${url}, trying minimal GET...`);
     
     try {
       const response = await axios.get(url, {
@@ -53,7 +38,7 @@ async function validateStreamUrl(url: string, referer: string): Promise<boolean>
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
           "Referer": referer,
           "Accept": "*/*",
-          "Range": "bytes=0-1023" // Request only first 1KB to check validity
+          "Range": "bytes=0-1" // Request only first byte to check validity
         },
         httpAgent: torAgent,
         httpsAgent: torAgent,
@@ -61,31 +46,14 @@ async function validateStreamUrl(url: string, referer: string): Promise<boolean>
         maxRedirects: 3,
         validateStatus: (status) => status < 400,
         // Limit response size to avoid downloading entire stream
-        maxContentLength: 2048, // 2KB max
+        maxContentLength: 1024, // 1KB max
         responseType: 'arraybuffer'
       });
 
-      // Check if the response is likely a valid stream
-      const contentType = response.headers['content-type'];
-
-      // Valid stream content types
-      const validContentTypes = [
-        'application/vnd.apple.mpegurl', // m3u8
-        'application/x-mpegurl',         // m3u8
-        'application/dash+xml',          // mpd
-        'video/',                        // any video type
-        'application/octet-stream',      // generic binary
-        'binary/'                        // generic binary
-      ];
-
-      const isValidContentType = validContentTypes.some(type =>
-        contentType && contentType.toLowerCase().includes(type)
-      );
-
-      // If content type is valid or if we can't determine, consider it valid
-      return isValidContentType || !contentType;
+      // If we got a response, consider it valid
+      return true;
     } catch (getError) {
-      console.log(`[validateStreamUrl] GET request also failed for ${url}:`, (getError as Error).message);
+      console.log(`[validateStreamUrl] Validation failed for ${url}:`, (getError as Error).message);
       return false;
     }
   }
@@ -160,22 +128,29 @@ export default async function getStream(req: Request, res: Response) {
       }
     }
 
-    // Validate the stream URL before returning it
-    const referer = proxyRef || 'https://allmovieland.link/';
-    const isValidStream = await validateStreamUrl(finalStreamUrl, referer);
+    // Skip validation for URLs that are known to not work with HEAD requests
+    // Some streaming services block HEAD requests or require specific handling
+    const skipValidation = finalStreamUrl.includes('lizer123') || finalStreamUrl.includes('slime403heq') || finalStreamUrl.includes('getm3u8');
     
-    if (!isValidStream) {
-      console.log(`[getStream] Stream URL validation failed: ${finalStreamUrl.substring(0, 100)}...`);
-      
-      const errorResult = { 
-        success: false, 
-        message: "Stream URL validation failed - stream is not accessible" 
-      };
-      
-      // Cache the error result for 2 minutes to prevent repeated requests
-      cache.set(cacheKey, errorResult, 2 * 60 * 1000);
-      
-      return res.json(errorResult);
+    if (!skipValidation) {
+      const referer = proxyRef || 'https://allmovieland.link/';
+      const isValidStream = await validateStreamUrl(finalStreamUrl, referer);
+
+      if (!isValidStream) {
+        console.log(`[getStream] Stream URL validation failed: ${finalStreamUrl.substring(0, 100)}...`);
+
+        const errorResult = {
+          success: false,
+          message: "Stream URL validation failed - stream is not accessible"
+        };
+
+        // Cache the error result for 2 minutes to prevent repeated requests
+        cache.set(cacheKey, errorResult, 2 * 60 * 1000);
+
+        return res.json(errorResult);
+      }
+    } else {
+      console.log(`[getStream] Skipping validation for known problematic URL: ${finalStreamUrl.substring(0, 100)}...`);
     }
 
     // 3. Wrap the final link in our CORS Proxy
