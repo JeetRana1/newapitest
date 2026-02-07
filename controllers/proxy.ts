@@ -115,16 +115,15 @@ export default async function proxy(req: Request, res: Response) {
         }
         
         let rawRes: any;
-        // Respect proxy_ref when doing Tor passthrough; some CDNs require referer/host/origin
+        // Respect proxy_ref when doing Tor passthrough; some CDNs require referer/origin
         const rawProxyRef = req.query.proxy_ref as string | undefined;
         const rawReferer = rawProxyRef || 'https://allmovieland.link/';
-        const rawOrigin = rawReferer.replace(/\/$/, '');
-        const buildRawHeaders = (url: string) => {
-            let hostname = 'localhost';
-            try {
-                hostname = new URL(url).hostname;
-            } catch (e) {}
+        let rawRefererOrigin = 'https://allmovieland.link';
+        try {
+            rawRefererOrigin = new URL(rawReferer).origin;
+        } catch (e) {}
 
+        const buildRawHeaders = (url: string) => {
             return {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
                 "Accept": "*/*",
@@ -134,9 +133,8 @@ export default async function proxy(req: Request, res: Response) {
                 "Sec-Fetch-Site": "cross-site",
                 "Pragma": "no-cache",
                 "Cache-Control": "no-cache",
-                "Referer": rawReferer,
-                "Origin": rawOrigin,
-                "Host": hostname
+                "Referer": rawRefererOrigin,
+                "Origin": rawRefererOrigin
             };
         };
 
@@ -182,6 +180,8 @@ export default async function proxy(req: Request, res: Response) {
                     res.setHeader('Content-Type', upstreamType as string);
                     res.setHeader('Access-Control-Allow-Origin', '*');
                     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+                    res.setHeader('Access-Control-Allow-Headers', '*');
+                    res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Type, Date');
                     return res.status(upstreamStatus).send(body);
                 }
 
@@ -244,7 +244,7 @@ export default async function proxy(req: Request, res: Response) {
                 return res.send(result.content);
             }
 
-        // If binary/segment, send as is
+        // If binary/segment, send as is (streaming)
         const result = {
             content: rawRes.data,
             contentType: contentType || 'application/vnd.apple.mpegurl'
@@ -253,8 +253,11 @@ export default async function proxy(req: Request, res: Response) {
         // Cache the result for 5 minutes
         cache.set(cacheKey, result, 5 * 60 * 1000);
         
+        if (rawRes.headers['content-length']) res.setHeader('Content-Length', rawRes.headers['content-length']);
         res.setHeader("Access-Control-Allow-Origin", "*");
         res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+        res.setHeader('Access-Control-Allow-Headers', '*');
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Type, Date');
         res.setHeader("Content-Type", result.contentType);
 
         return res.status(200).send(result.content);
