@@ -15,6 +15,31 @@ export default async function proxy(req: Request, res: Response) {
     const protocol = req.protocol;
     const proxyBase = `${protocol}://${host}/api/v1/proxy?url=`;
 
+    // 0. Safety Valve: Raw Passthrough for Fragile Audio Providers
+    // If we detect lizer123 or similar audio hosts, we turn off all "smart" features
+    if (targetUrl && (targetUrl.includes('lizer123') || targetUrl.includes('getm3u8'))) {
+        console.log(`[Proxy Raw] Passthrough for fragile audio: ${targetUrl}`);
+        try {
+            const rawRes = await axios.get(targetUrl, {
+                responseType: 'stream',
+                headers: {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                    "Accept": "*/*"
+                }
+            });
+
+            // Set basic CORS
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+            res.setHeader("Content-Type", rawRes.headers['content-type'] || 'application/vnd.apple.mpegurl');
+
+            return rawRes.data.pipe(res);
+        } catch (e: any) {
+            console.log(`[Proxy Raw] Failed: ${e.message}`);
+            return res.status(500).send("Audio Stream Error");
+        }
+    }
+
     // 1. Root Trap: Handle relative stream requests
     if (!targetUrl) {
         const fullPath = req.originalUrl;
