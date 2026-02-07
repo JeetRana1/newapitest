@@ -7,56 +7,120 @@ import * as crypto from 'crypto';
 
 const torAgent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
 
-// Function to validate if a stream URL is accessible
-async function validateStreamUrl(url: string, referer: string): Promise<boolean> {
-  // Try HEAD request first (more lenient validation)
-  try {
-    const response = await axios.head(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Referer": referer,
-        "Accept": "*/*",
-        "Accept-Encoding": "identity" // Prevent compression that might interfere with HEAD requests
-      },
-      httpAgent: torAgent,
-      httpsAgent: torAgent,
-      timeout: 8000, // 8 seconds timeout for HEAD request
-      maxRedirects: 3,
-      validateStatus: (status) => status < 400 // Accept 2xx and 3xx as valid
-    });
+const DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36";
 
-    // If we get any response without error, consider it valid
-    // Some streaming services don't return proper content-type in HEAD requests
-    return true;
-  } catch (headError) {
-    // If HEAD fails, try a minimal GET request to check if the URL is accessible
-    console.log(`[validateStreamUrl] HEAD request failed for ${url}, trying minimal GET...`);
-    
+const getErrorMessage = (err: unknown) => {
+  if (err instanceof Error) return err.message;
+  try { return JSON.stringify(err); } catch { return String(err); }
+};
+
+// Try validating a stream URL using Tor first, then direct as fallback. Returns details for diagnostics.
+async function tryValidateUrl(url: string, referer: string): Promise<{ ok: boolean; status?: number; snippet?: string; via?: 'tor' | 'direct' | 'none' }> {
+  const headersBase = {
+    "User-Agent": DEFAULT_USER_AGENT,
+    "Referer": referer,
+    "Accept": "*/*",
+  };
+
+  const tryHeadOrRange = async (useTor: boolean) => {
     try {
-      const response = await axios.get(url, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-          "Referer": referer,
-          "Accept": "*/*",
-          "Range": "bytes=0-1" // Request only first byte to check validity
-        },
-        httpAgent: torAgent,
-        httpsAgent: torAgent,
-        timeout: 8000, // 8 seconds timeout for GET request
+      // Try HEAD first
+      await axios.head(url, {
+        headers: { ...headersBase, "Accept-Encoding": "identity" },
+        httpAgent: useTor ? torAgent : undefined,
+        httpsAgent: useTor ? torAgent : undefined,
+        timeout: 8000,
         maxRedirects: 3,
-        validateStatus: (status) => status < 400,
-        // Limit response size to avoid downloading entire stream
-        maxContentLength: 1024, // 1KB max
-        responseType: 'arraybuffer'
+        validateStatus: (status) => status < 400
       });
+      return { ok: true, via: (useTor ? 'tor' : 'direct') as 'tor' | 'direct' };
+    } catch (headErr) {
+      // HEAD failed — try minimal GET
+      try {
+        const r = await axios.get(url, {
+          headers: { ...headersBase, "Range": "bytes=0-1" },
+          httpAgent: useTor ? torAgent : undefined,
+          httpsAgent: useTor ? torAgent : undefined,
+          timeout: 8000,
+          maxRedirects: 3,
+          validateStatus: (status) => status < 400,
+          maxContentLength: 1024,
+          responseType: 'arraybuffer'
+        });
 
-      // If we got a response, consider it valid
-      return true;
-    } catch (getError) {
-      console.log(`[validateStreamUrl] Validation failed for ${url}:`, (getError as Error).message);
-      return false;
+        let snippet = '';
+        try {
+          snippet = typeof r.data === 'string' ? r.data.substring(0, 200) : JSON.stringify(r.data).substring(0, 200);
+        } catch {
+          snippet = '[unserializable snippet]';
+        }
+
+        return { ok: true, status: r.status, snippet, via: (useTor ? 'tor' : 'direct') as 'tor' | 'direct' };
+      } catch (getErr: any) {
+        return { ok: false, status: getErr.response?.status, snippet: getErr.response ? JSON.stringify(getErr.response.data).substring(0,200) : undefined, via: (useTor ? 'tor' : 'direct') as 'tor' | 'direct' };
+      }
+    }
+  };
+
+  // Try Tor first
+  let res = await tryHeadOrRange(true);
+  if (res.ok) return res;
+
+  // Fall back to direct
+  res = await tryHeadOrRange(false);
+  return res;
+}
+
+// Validate stream URL with mirror and playlist-refresh strategies
+async function ensureValidStream(originalUrl: string, referer: string, playlistUrl?: string): Promise<{ ok: boolean; url?: string; reason?: string; tried?: string[] }> {
+  // 1) Try original URL
+  const tried: string[] = [];
+  const first = await tryValidateUrl(originalUrl, referer);
+  tried.push(`${originalUrl} (via=${first.via} status=${first.status ?? 'unknown'})`);
+  if (first.ok) return { ok: true, url: originalUrl, tried };
+
+  // 2) If URL matches i-cdn-<n>, try mirrors (0..5)
+  const icdnMatch = originalUrl.match(/(i-cdn-)(\d+)/);
+  if (icdnMatch) {
+    const prefix = icdnMatch[1];
+    const maxMirror = 5; // try up to i-cdn-5
+    for (let i = 0; i <= maxMirror; i++) {
+      const candidate = originalUrl.replace(/i-cdn-\d+/, `${prefix}${i}`);
+      if (candidate === originalUrl) continue;
+      const r = await tryValidateUrl(candidate, referer);
+      tried.push(`${candidate} (via=${r.via} status=${r.status ?? 'unknown'})`);
+      if (r.ok) return { ok: true, url: candidate, tried };
     }
   }
+
+  // 3) If we resolved from a playlist, try re-fetching the playlist to get a fresh token up to 2 times
+  if (playlistUrl) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        console.log(`[ensureValidStream] Re-fetching playlist (attempt ${attempt}) from ${playlistUrl}`);
+        const resp = await axios.get(playlistUrl, {
+          headers: {
+            "User-Agent": DEFAULT_USER_AGENT,
+            "Referer": new URL(playlistUrl).origin + '/'
+          },
+          httpAgent: torAgent,
+          httpsAgent: torAgent,
+          timeout: 8000
+        });
+
+        const newUrl = typeof resp.data === 'string' ? resp.data : resp.data.toString();
+        tried.push(`refetched:${newUrl.substring(0,200)}`);
+
+        const validated = await tryValidateUrl(newUrl, referer);
+        tried.push(`${newUrl} (via=${validated.via} status=${validated.status ?? 'unknown'})`);
+        if (validated.ok) return { ok: true, url: newUrl, tried };
+      } catch (reErr) {
+        tried.push(`playlist_refetch_failed: ${getErrorMessage(reErr)}`);
+      }
+    }
+  }
+
+  return { ok: false, reason: 'validation_failed', tried };
 }
 
 export default async function getStream(req: Request, res: Response) {
@@ -93,6 +157,10 @@ export default async function getStream(req: Request, res: Response) {
 
     // 2. Logic Switch: Is this a direct URL or a token?
     // CRITICAL: Check for known external hosts or standard http protocol to bypass token resolution
+    // Prepare variables for playlist handling and validation
+    let playlistUrl: string | undefined = undefined;
+    let resolvedFromPlaylist = false;
+
     if (token.startsWith('http') || token.includes('lizer123') || token.includes('cdn')) {
       console.log(`[getStream] Detected direct URL: ${token}. Proxying...`);
       finalStreamUrl = token;
@@ -100,14 +168,14 @@ export default async function getStream(req: Request, res: Response) {
       // Resolve token from mirror
       const baseDomain = (proxyRef && proxyRef !== '' ? proxyRef : await getPlayerUrl()).replace(/\/$/, '');
       const path = token.startsWith('~') ? token.slice(1) : token; // Remove the ~ prefix but don't add .txt yet
-      const playlistUrl = `${baseDomain}/playlist/${path}.txt`;
+      const playlistUrlLocal = `${baseDomain}/playlist/${path}.txt`;
 
       console.log(`[getStream] Fetching token from mirror: ${baseDomain}`);
-      console.log(`[getStream] Playlist URL: ${playlistUrl}`);
+      console.log(`[getStream] Playlist URL: ${playlistUrlLocal}`);
       
-      const response = await axios.get(playlistUrl, {
+      const response = await axios.get(playlistUrlLocal, {
         headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+          "User-Agent": DEFAULT_USER_AGENT,
           "Referer": baseDomain + "/",
           "X-Csrf-Token": key
         },
@@ -117,6 +185,9 @@ export default async function getStream(req: Request, res: Response) {
       });
       
       finalStreamUrl = response.data;
+      // Mark that we resolved from a playlist and keep playlist URL for possible re-fetching
+      resolvedFromPlaylist = true;
+      playlistUrl = playlistUrlLocal;
       
       // If the response is not a valid URL, it might be the actual stream URL
       if (typeof finalStreamUrl === 'string' && finalStreamUrl.startsWith('http')) {
@@ -128,26 +199,33 @@ export default async function getStream(req: Request, res: Response) {
       }
     }
 
-    // Skip validation for URLs that are known to not work with HEAD requests
-    // Some streaming services block HEAD requests or require specific handling
-    const skipValidation = finalStreamUrl.includes('lizer123') || finalStreamUrl.includes('slime403heq') || finalStreamUrl.includes('getm3u8');
-    
+    // Skip validation for a small set of hosts that are known to break HEAD requests
+    // Note: slime403heq is intentionally NOT skipped so we can try mirrors and refetch.
+    const skipValidation = finalStreamUrl.includes('lizer123') || finalStreamUrl.includes('getm3u8');
+
     if (!skipValidation) {
       const referer = proxyRef || 'https://allmovieland.link/';
-      const isValidStream = await validateStreamUrl(finalStreamUrl, referer);
+      const validation = await ensureValidStream(finalStreamUrl, referer, typeof playlistUrl !== 'undefined' ? playlistUrl : undefined);
 
-      if (!isValidStream) {
-        console.log(`[getStream] Stream URL validation failed: ${finalStreamUrl.substring(0, 100)}...`);
+      if (!validation.ok) {
+        console.log(`[getStream] Stream URL validation failed after tries: ${validation.tried?.slice(0,6).join(' | ')}`);
 
         const errorResult = {
           success: false,
-          message: "Stream URL validation failed - stream is not accessible"
+          message: "Stream URL validation failed - stream is not accessible",
+          details: { tried: validation.tried }
         };
 
         // Cache the error result for 2 minutes to prevent repeated requests
         cache.set(cacheKey, errorResult, 2 * 60 * 1000);
 
         return res.json(errorResult);
+      }
+
+      // If validation returned a different working URL (e.g., mirror or refreshed token), use it
+      if (validation.url && validation.url !== finalStreamUrl) {
+        console.log(`[getStream] Replacing stream URL with validated URL: ${validation.url}`);
+        finalStreamUrl = validation.url;
       }
     } else {
       console.log(`[getStream] Skipping validation for known problematic URL: ${finalStreamUrl.substring(0, 100)}...`);
