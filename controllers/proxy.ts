@@ -98,6 +98,7 @@ export default async function proxy(req: Request, res: Response) {
     const host = req.get('host') || "";
     const protocol = req.protocol;
     const proxyBase = `${protocol}://${host}/api/v1/proxy?url=`;
+    const debugMode = req.query.debug === '1' || req.query.debug === 'true';
 
     // 0. Safety Valve: Smart Passthrough for Fragile Audio Providers (via Tor)
     // If we detect lizer123 or similar audio hosts, we turn off all "smart" features and use Tor
@@ -137,6 +138,10 @@ export default async function proxy(req: Request, res: Response) {
                 "Origin": rawRefererOrigin
             };
         };
+
+        if (debugMode) {
+            console.log(`[Proxy Raw Debug] Direct request headers:`, buildRawHeaders(targetUrl));
+        }
 
         try {
             // Try direct first for speed, then fallback to Tor if direct fails
@@ -178,11 +183,16 @@ export default async function proxy(req: Request, res: Response) {
                     }
 
                     console.log(`[Proxy Raw] Tor fetch returned upstream status ${upstreamStatus} for ${targetUrl}. Forwarding response.`);
+                    // Surface upstream hints for debugging when requested
+                    if (debugMode) res.setHeader('X-Proxy-Tried', 'direct,tor');
+                    res.setHeader('X-Upstream-Status', String(upstreamStatus));
+                    if (debugMode) res.setHeader('X-Upstream-Snippet', String(body).substring(0, 300));
                     res.setHeader('Content-Type', upstreamType as string);
                     res.setHeader('Access-Control-Allow-Origin', '*');
                     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
                     res.setHeader('Access-Control-Allow-Headers', '*');
                     res.setHeader('Access-Control-Expose-Headers', 'Content-Length, Content-Type, Date');
+                    res.setHeader('X-Proxy-Via', 'tor');
                     return res.status(upstreamStatus).send(body);
                 }
 
@@ -299,8 +309,7 @@ export default async function proxy(req: Request, res: Response) {
     const cacheKey = `proxy_${targetUrl}`;
     const cachedResult = cache.get(cacheKey);
     if (cachedResult) {
-        console.log(`[Proxy] Returning cached result for: ${targetUrl}`);
-        res.setHeader("Content-Type", cachedResult.contentType);
+        console.log(`[Proxy] Returning cached result for: ${targetUrl}`);        if (debugMode) res.setHeader('X-Proxy-Debug', 'cache-hit');        res.setHeader("Content-Type", cachedResult.contentType);
         res.setHeader("Access-Control-Allow-Origin", "*");
         res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
         res.setHeader("Access-Control-Allow-Headers", "*");
@@ -316,7 +325,7 @@ export default async function proxy(req: Request, res: Response) {
         const isM3U8 = targetUrl.includes('.m3u8') || targetUrl.includes('.txt');
         isSegment = targetUrl.includes('.ts') || targetUrl.includes('.mp4');
 
-        const getProxyHeaders = (url: string) => {
+        const getProxyHeaders = (url: string, overrideReferer?: string) => {
             let hostname = '';
             try {
                 const uri = new URL(url);
@@ -329,7 +338,7 @@ export default async function proxy(req: Request, res: Response) {
             
             // Use the hint from the query param if available - MOST RELIABLE
             // This bypasses the need for the frontend to set tricky headers
-            let referer = proxyRef || "https://allmovieland.link/";
+            let referer = overrideReferer || proxyRef || "https://allmovieland.link/";
 
             if (!proxyRef) {
                 // Dynamic Referer Intelligence (Fallback only)
@@ -383,18 +392,69 @@ export default async function proxy(req: Request, res: Response) {
         };
 
         const tryFetch = async (useTor: boolean) => {
+            const headers = getProxyHeaders(targetUrl);
+            if (debugMode) {
+                console.log(`[Proxy Debug] Trying fetch (${useTor ? 'tor' : 'direct'}) to ${targetUrl}`);
+                console.log(`[Proxy Debug] Request headers:`, headers);
+            }
             try {
-                return await axios.get(targetUrl, {
-                    headers: getProxyHeaders(targetUrl),
+                const start = Date.now();
+                const r = await axios.get(targetUrl, {
+                    headers,
                     httpAgent: useTor ? torAgent : undefined,
                     httpsAgent: useTor ? torAgent : undefined,
                     responseType: isM3U8 ? 'text' : 'stream',
-                    timeout: isSegment ? 20000 : 30000, // Segments should be faster
+                    timeout: isSegment ? 20000 : 30000,
                     maxRedirects: 5,
-                    validateStatus: (status) => status < 400 // Only count 2xx/3xx as success
+                    validateStatus: (status) => status < 400
                 });
-            } catch (error: unknown) {
-                console.log(`[tryFetch] Error fetching ${targetUrl}:`, getErrorMessage(error));
+                if (debugMode) {
+                    const dur = Date.now() - start;
+                    res.setHeader('X-Upstream-Duration', String(dur));
+                    res.setHeader('X-Proxy-Via', useTor ? 'tor' : 'direct');
+                    res.setHeader('X-Upstream-Referer-Sent', headers['Referer'] || '');
+                }
+                return r;
+            } catch (error: any) {
+                const errMsg = getErrorMessage(error);
+                if (debugMode) console.log(`[Proxy Debug] Primary fetch failed (${useTor ? 'tor' : 'direct'}): ${errMsg}`);
+                // If we had a header/403/404/timeout, try a single retry with target origin as referer
+                const status = error.response?.status;
+                const isTransient = !status || [401,403,404].includes(status) || error.code === 'ECONNABORTED';
+                if (isTransient) {
+                    let fallbackReferer = '';
+                    try { fallbackReferer = new URL(targetUrl).origin + '/'; } catch (e) { fallbackReferer = proxyRef || 'https://allmovieland.link/'; }
+                    if (fallbackReferer && fallbackReferer !== headers['Referer']) {
+                        const retryHeaders = getProxyHeaders(targetUrl, fallbackReferer);
+                        if (debugMode) {
+                            console.log(`[Proxy Debug] Retrying with fallback Referer: ${fallbackReferer}`);
+                            console.log(`[Proxy Debug] Retry headers:`, retryHeaders);
+                        }
+                        try {
+                            const start = Date.now();
+                            const r2 = await axios.get(targetUrl, {
+                                headers: retryHeaders,
+                                httpAgent: useTor ? torAgent : undefined,
+                                httpsAgent: useTor ? torAgent : undefined,
+                                responseType: isM3U8 ? 'text' : 'stream',
+                                timeout: isSegment ? 20000 : 30000,
+                                maxRedirects: 5,
+                                validateStatus: (status) => status < 400
+                            });
+                            if (debugMode) {
+                                const dur = Date.now() - start;
+                                res.setHeader('X-Upstream-Duration', String(dur));
+                                res.setHeader('X-Proxy-Via', useTor ? 'tor' : 'direct');
+                                res.setHeader('X-Upstream-Referer-Sent', retryHeaders['Referer'] || '');
+                                res.setHeader('X-Proxy-Retry', 'referer-fallback');
+                            }
+                            return r2;
+                        } catch (err2: any) {
+                            if (debugMode) console.log(`[Proxy Debug] Retry also failed: ${getErrorMessage(err2)}`);
+                        }
+                    }
+                }
+                // No more retries: rethrow to be handled by caller
                 throw error;
             }
         };
@@ -541,6 +601,13 @@ export default async function proxy(req: Request, res: Response) {
         // Log errors with more detail
         console.error(`[Proxy Fatal] ${error.message} for ${targetUrl}`);
         console.error(`[Proxy Error Details] Status: ${error.response?.status}, Data: ${typeof error.response?.data === 'string' ? error.response?.data.substring(0, 200) : 'non-string data'}`);
+        
+        // Expose minimal debug hints when requested
+        if (debugMode && !res.headersSent) {
+            try { res.setHeader('X-Proxy-Error', getErrorMessage(error).substring(0, 200)); } catch {}
+            try { res.setHeader('X-Upstream-Status', String(error.response?.status || 'unknown')); } catch {}
+            try { res.setHeader('X-Upstream-Snippet', typeof error.response?.data === 'string' ? error.response.data.substring(0,200) : 'non-string data'); } catch {}
+        }
         
         if (!res.headersSent) {
             res.status(500).send("Proxy connectivity issues. Please try refreshing.");

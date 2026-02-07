@@ -19,12 +19,7 @@ export default async function getInfo(id: string) {
     // 1. Curated High-Reliability Mirror List (Gold Standard Only)
     const domains = [
       "https://allmovieland.link/",
-      "https://vekna402las.com",
-      "https://allmovieland.link",
-      "https://allmovieland.work",
-      "https://allmovieland.site",
-      "https://allmovieland.io",
-      "https://vidsrc.ru",       // Primary - Very Stable
+      "https://vekna402las.com",    // Primary - Very Stable
       playerUrl // Dynamic Fallback
     ];
 
