@@ -100,6 +100,21 @@ export default async function proxy(req: Request, res: Response) {
     const proxyBase = `${protocol}://${host}/api/v1/proxy?url=`;
     const debugMode = req.query.debug === '1' || req.query.debug === 'true';
 
+    // Quick debug fetch: perform HEAD from server to target and return result (opt-in via _debug_fetch=1)
+    if (debugMode && req.query._debug_fetch === '1' && targetUrl) {
+        try {
+            const testHeaders = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Referer": (() => { try { return new URL(targetUrl).origin + '/'; } catch { return 'https://allmovieland.link/'; } })(),
+                "Accept": "*/*"
+            };
+            const headResp = await axios.head(targetUrl, { headers: testHeaders, timeout: 8000, maxRedirects: 2, validateStatus: () => true });
+            return res.json({ success: true, status: headResp.status, headers: headResp.headers });
+        } catch (e: any) {
+            return res.json({ success: false, error: getErrorMessage(e), status: e.response?.status, snippet: e.response?.data ? String(e.response.data).substring(0,300) : undefined });
+        }
+    }
+
     // 0. Safety Valve: Smart Passthrough for Fragile Audio Providers (via Tor)
     // If we detect lizer123 or similar audio hosts, we turn off all "smart" features and use Tor
     if (targetUrl && (targetUrl.includes('lizer123') || targetUrl.includes('getm3u8') || targetUrl.includes('slime403heq'))) {
