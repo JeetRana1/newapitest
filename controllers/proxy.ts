@@ -15,13 +15,13 @@ export default async function proxy(req: Request, res: Response) {
     const protocol = req.protocol;
     const proxyBase = `${protocol}://${host}/api/v1/proxy?url=`;
 
-    // 0. Safety Valve: Raw Passthrough for Fragile Audio Providers (via Tor)
+    // 0. Safety Valve: Smart Passthrough for Fragile Audio Providers (via Tor)
     // If we detect lizer123 or similar audio hosts, we turn off all "smart" features and use Tor
     if (targetUrl && (targetUrl.includes('lizer123') || targetUrl.includes('getm3u8'))) {
         console.log(`[Proxy Raw] Tor Passthrough for fragile audio: ${targetUrl}`);
         try {
             const rawRes = await axios.get(targetUrl, {
-                responseType: 'stream',
+                responseType: 'arraybuffer', // Fetch as buffer to inspect content
                 headers: {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
                     "Accept": "*/*",
@@ -34,15 +34,45 @@ export default async function proxy(req: Request, res: Response) {
                 },
                 httpAgent: torAgent,
                 httpsAgent: torAgent,
-                timeout: 20000
+                timeout: 20000,
+                maxRedirects: 5,
+                validateStatus: (status) => status < 400
             });
 
-            // Set basic CORS
+            // Handle Redirections properly
+            const finalUrl = rawRes.request.res.responseUrl || targetUrl;
+            const contentType = rawRes.headers['content-type'];
+
+            // If it's a manifest, we MUST rewrite it to fix relative paths
+            if (contentType && (contentType.includes('mpegurl') || contentType.includes('application/x-mpegURL') || finalUrl.includes('.m3u8'))) {
+                console.log(`[Proxy Raw] Detected Manifest in Passthrough. Rewriting from ${finalUrl}...`);
+                let content = rawRes.data.toString('utf-8');
+                const baseUrl = finalUrl.substring(0, finalUrl.lastIndexOf('/') + 1);
+                // Self-reference as referer for segments
+                const refParam = `&proxy_ref=${encodeURIComponent(finalUrl)}`;
+
+                const rewrittenLines = content.split('\n').map((line: string) => {
+                    const trimmed = line.trim();
+                    if (!trimmed) return line;
+
+                    if (trimmed.startsWith('#')) return line;
+
+                    // Rewrite segment/playlist URL
+                    const absUrl = trimmed.startsWith('http') ? trimmed : new URL(trimmed, baseUrl).href;
+                    return `${proxyBase}${encodeURIComponent(absUrl)}${refParam}`;
+                });
+
+                res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+                res.setHeader("Access-Control-Allow-Origin", "*");
+                return res.send(rewrittenLines.join('\n'));
+            }
+
+            // If binary/segment, send as is
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-            res.setHeader("Content-Type", rawRes.headers['content-type'] || 'application/vnd.apple.mpegurl');
+            res.setHeader("Content-Type", contentType || 'application/vnd.apple.mpegurl');
 
-            return rawRes.data.pipe(res);
+            return res.status(200).send(rawRes.data);
         } catch (e: any) {
             console.log(`[Proxy Raw] Failed: ${e.message}`);
             return res.status(500).send("Audio Stream Error");
