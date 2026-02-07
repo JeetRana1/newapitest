@@ -139,21 +139,22 @@ export default async function proxy(req: Request, res: Response) {
         };
 
         try {
+            // Try direct first for speed, then fallback to Tor if direct fails
             rawRes = await axios.get(targetUrl, {
                 responseType: 'arraybuffer', // Fetch as buffer to inspect content
                 headers: buildRawHeaders(targetUrl),
-                httpAgent: torAgent,
-                httpsAgent: torAgent,
-                timeout: 20000,
+                timeout: 12000,
                 maxRedirects: 5,
                 validateStatus: (status) => status < 400
             });
         } catch (err: unknown) {
-            console.log(`[Proxy Raw] Tor fetch failed for ${targetUrl}: ${getErrorMessage(err)}. Trying direct...`);
+            console.log(`[Proxy Raw] Direct fetch failed for ${targetUrl}: ${getErrorMessage(err)}. Trying Tor...`);
             try {
                 rawRes = await axios.get(targetUrl, {
                     responseType: 'arraybuffer',
                     headers: buildRawHeaders(targetUrl),
+                    httpAgent: torAgent,
+                    httpsAgent: torAgent,
                     timeout: 20000,
                     maxRedirects: 5,
                     validateStatus: (status) => status < 400
@@ -176,7 +177,7 @@ export default async function proxy(req: Request, res: Response) {
                         body = `[unserializable response body]`;
                     }
 
-                    console.log(`[Proxy Raw] Direct fetch returned upstream status ${upstreamStatus} for ${targetUrl}. Forwarding response.`);
+                    console.log(`[Proxy Raw] Tor fetch returned upstream status ${upstreamStatus} for ${targetUrl}. Forwarding response.`);
                     res.setHeader('Content-Type', upstreamType as string);
                     res.setHeader('Access-Control-Allow-Origin', '*');
                     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -186,7 +187,7 @@ export default async function proxy(req: Request, res: Response) {
                 }
 
                 let details = getErrorMessage(err2);
-                console.log(`[Proxy Raw] Direct fetch also failed for ${targetUrl}: ${details}`);
+                console.log(`[Proxy Raw] Tor fetch also failed for ${targetUrl}: ${details}`);
                 return res.status(500).send(`Stream Error: ${details}`);
             }
         }
