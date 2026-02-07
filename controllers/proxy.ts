@@ -16,7 +16,7 @@ const getErrorMessage = (err: unknown) => {
 };
 
 // Validate a URL (try Tor then direct) and try simple mirrors for i-cdn hosts.
-const validateAndFindWorkingUrl = async (url: string, referer: string): Promise<string | undefined> => {
+const validateAndFindWorkingUrl = async (url: string, referer: string, options?: { useTorFirst?: boolean; timeoutMs?: number; maxMirrors?: number }): Promise<string | undefined> => {
     const cacheKey = `valid_${url}`;
     const cached = cache.get(cacheKey);
     if (cached) return cached as string;
@@ -27,13 +27,17 @@ const validateAndFindWorkingUrl = async (url: string, referer: string): Promise<
         "Accept": "*/*"
     };
 
+    const timeoutMs = options?.timeoutMs ?? 3000;
+    const maxMirrors = options?.maxMirrors ?? 2;
+    const useTorFirst = options?.useTorFirst ?? true;
+
     const tryHeadOrRange = async (targetUrl: string, useTor: boolean) => {
         try {
             await axios.head(targetUrl, {
                 headers: { ...headersBase, "Accept-Encoding": "identity" },
                 httpAgent: useTor ? torAgent : undefined,
                 httpsAgent: useTor ? torAgent : undefined,
-                timeout: 3000,
+                timeout: timeoutMs,
                 maxRedirects: 2,
                 validateStatus: (s) => s < 400
             });
@@ -44,7 +48,7 @@ const validateAndFindWorkingUrl = async (url: string, referer: string): Promise<
                     headers: { ...headersBase, "Range": "bytes=0-1" },
                     httpAgent: useTor ? torAgent : undefined,
                     httpsAgent: useTor ? torAgent : undefined,
-                    timeout: 3000,
+                    timeout: timeoutMs,
                     maxRedirects: 2,
                     validateStatus: (s) => s < 400,
                     maxContentLength: 1024,
@@ -57,31 +61,27 @@ const validateAndFindWorkingUrl = async (url: string, referer: string): Promise<
         }
     };
 
-    // Try Tor then direct
-    if (await tryHeadOrRange(url, true)) {
-        cache.set(cacheKey, url, 2 * 60 * 1000);
-        return url;
+    const order = useTorFirst ? [true, false] : [false, true];
+
+    for (const useTor of order) {
+        if (await tryHeadOrRange(url, useTor)) {
+            cache.set(cacheKey, url, 2 * 60 * 1000);
+            return url;
+        }
     }
 
-    if (await tryHeadOrRange(url, false)) {
-        cache.set(cacheKey, url, 2 * 60 * 1000);
-        return url;
-    }
-
-    // If it's an i-cdn host, try simple mirror replacements
+    // If it's an i-cdn host, try simple mirror replacements (limited count)
     const icdnMatch = url.match(/i-cdn-(\d+)/);
     if (icdnMatch) {
         const base = url.replace(/i-cdn-\d+/, 'i-cdn-');
-        for (let i = 0; i <= 5; i++) {
+        for (let i = 0; i <= maxMirrors; i++) {
             const candidate = base.replace('i-cdn-', `i-cdn-${i}`);
             if (candidate === url) continue;
-            if (await tryHeadOrRange(candidate, false)) {
-                cache.set(cacheKey, candidate, 2 * 60 * 1000);
-                return candidate;
-            }
-            if (await tryHeadOrRange(candidate, true)) {
-                cache.set(cacheKey, candidate, 2 * 60 * 1000);
-                return candidate;
+            for (const useTor of order) {
+                if (await tryHeadOrRange(candidate, useTor)) {
+                    cache.set(cacheKey, candidate, 2 * 60 * 1000);
+                    return candidate;
+                }
             }
         }
     }
@@ -222,9 +222,10 @@ export default async function proxy(req: Request, res: Response) {
                     }
 
                     // Validate and try to find a working mirror if necessary
-                    const working = await validateAndFindWorkingUrl(absUrl, finalUrl);
+                    // For manifest rewrites, prefer quick direct checks (avoid Tor for speed) and limit mirrors
+                    const working = await validateAndFindWorkingUrl(absUrl, finalUrl, { useTorFirst: false, timeoutMs: 1000, maxMirrors: 2 });
                     if (!working) {
-                        console.log(`[Proxy Raw] Skipping unavailable entry during rewrite: ${absUrl}`);
+                        console.log(`[Proxy Raw] Skipping unavailable entry during rewrite (fast-check): ${absUrl}`);
                         return ''; // drop this line
                     }
 
