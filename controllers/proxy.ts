@@ -118,7 +118,10 @@ export default async function proxy(req: Request, res: Response) {
         let rawRes: any;
         // Respect proxy_ref when doing Tor passthrough; some CDNs require referer/origin
         const rawProxyRef = req.query.proxy_ref as string | undefined;
-        const rawReferer = rawProxyRef || 'https://allmovieland.link/';
+        let rawReferer = rawProxyRef;
+        if (!rawReferer) {
+            try { rawReferer = new URL(targetUrl).origin + '/'; } catch (e) { rawReferer = 'https://allmovieland.link/'; }
+        }
         let rawRefererOrigin = 'https://allmovieland.link';
         try {
             rawRefererOrigin = new URL(rawReferer).origin;
