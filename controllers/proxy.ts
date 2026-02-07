@@ -41,19 +41,35 @@ export default async function proxy(req: Request, res: Response) {
         }
         
         let rawRes: any;
+        // Respect proxy_ref when doing Tor passthrough; some CDNs require referer/host/origin
+        const rawProxyRef = req.query.proxy_ref as string | undefined;
+        const rawReferer = rawProxyRef || 'https://allmovieland.link/';
+        const rawOrigin = rawReferer.replace(/\/$/, '');
+        const buildRawHeaders = (url: string) => {
+            let hostname = 'localhost';
+            try {
+                hostname = new URL(url).hostname;
+            } catch (e) {}
+
+            return {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Accept": "*/*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "cross-site",
+                "Pragma": "no-cache",
+                "Cache-Control": "no-cache",
+                "Referer": rawReferer,
+                "Origin": rawOrigin,
+                "Host": hostname
+            };
+        };
+
         try {
             rawRes = await axios.get(targetUrl, {
                 responseType: 'arraybuffer', // Fetch as buffer to inspect content
-                headers: {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                    "Accept": "*/*",
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Sec-Fetch-Dest": "empty",
-                    "Sec-Fetch-Mode": "cors",
-                    "Sec-Fetch-Site": "cross-site",
-                    "Pragma": "no-cache",
-                    "Cache-Control": "no-cache"
-                },
+                headers: buildRawHeaders(targetUrl),
                 httpAgent: torAgent,
                 httpsAgent: torAgent,
                 timeout: 20000,
@@ -65,32 +81,37 @@ export default async function proxy(req: Request, res: Response) {
             try {
                 rawRes = await axios.get(targetUrl, {
                     responseType: 'arraybuffer',
-                    headers: {
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                        "Accept": "*/*",
-                        "Accept-Language": "en-US,en;q=0.9",
-                        "Sec-Fetch-Dest": "empty",
-                        "Sec-Fetch-Mode": "cors",
-                        "Sec-Fetch-Site": "cross-site",
-                        "Pragma": "no-cache",
-                        "Cache-Control": "no-cache"
-                    },
+                    headers: buildRawHeaders(targetUrl),
                     timeout: 20000,
                     maxRedirects: 5,
                     validateStatus: (status) => status < 400
                 });
             } catch (err2: unknown) {
-                let details = getErrorMessage(err2);
-                if (axios.isAxiosError(err2)) {
-                    const status = err2.response?.status;
-                    let dataSnippet = '';
+                // If upstream returned a response (e.g., 404/403), forward that status/body to client instead of masking it
+                if (axios.isAxiosError(err2) && err2.response) {
+                    const upstreamStatus = err2.response.status || 502;
+                    const upstreamType = err2.response.headers?.['content-type'] || 'text/plain';
+                    let body: any = err2.response.data;
+
                     try {
-                        dataSnippet = typeof err2.response?.data === 'string' ? err2.response?.data.substring(0, 200) : JSON.stringify(err2.response?.data).substring(0, 200);
+                        if (Buffer.isBuffer(body)) {
+                            // If it's a Buffer (like HTML returned), convert to string
+                            body = body.toString('utf-8');
+                        } else if (typeof body !== 'string') {
+                            body = JSON.stringify(body);
+                        }
                     } catch {
-                        dataSnippet = '[unserializable response data]';
+                        body = `[unserializable response body]`;
                     }
-                    details = `status=${status} data=${dataSnippet} message=${getErrorMessage(err2)}`;
+
+                    console.log(`[Proxy Raw] Direct fetch returned upstream status ${upstreamStatus} for ${targetUrl}. Forwarding response.`);
+                    res.setHeader('Content-Type', upstreamType as string);
+                    res.setHeader('Access-Control-Allow-Origin', '*');
+                    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+                    return res.status(upstreamStatus).send(body);
                 }
+
+                let details = getErrorMessage(err2);
                 console.log(`[Proxy Raw] Direct fetch also failed for ${targetUrl}: ${details}`);
                 return res.status(500).send(`Stream Error: ${details}`);
             }
