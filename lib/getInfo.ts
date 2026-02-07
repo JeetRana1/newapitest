@@ -37,13 +37,25 @@ export default async function getInfo(id: string) {
       if (!currentDomain) continue;
       currentDomain = currentDomain.replace(/\/$/, '');
 
-      // 3. Generate Smart Paths
-      let paths = [`/play/${id}`, `/v/${id}`, `/movie/${id}`];
+      // 3. Generate Smart Paths (expanded to cover more site variations)
+      let paths = [
+        `/play/${id}`,
+        `/v/${id}`,
+        `/movie/${id}`,
+        `/watch/${id}`,
+        `/embed/${id}`,
+        `/e/${id}`,
+        `/embed/movie/${id}`,
+        `/watch/${id}/play`,
+        `/play/${id}?autoplay=1`,
+        `/movie/${id}/watch`
+      ];
 
       // If it looks like a series ID without season/ep, try to brute-force Season 1 Episode 1
-      if (!isExplicitTV && (currentDomain.includes('vidsrc') || currentDomain.includes('superembed'))) {
+      if (!isExplicitTV && (currentDomain.includes('vidsrc') || currentDomain.includes('superembed') || currentDomain.includes('vekna') || currentDomain.includes('allmovieland'))) {
         paths.unshift(`/embed/tv/${id}/1/1`);
         paths.push(`/play/${id}-1-1`);
+        paths.push(`/watch/${id}-s1-e1`);
       }
 
       if (isExplicitTV) {
@@ -51,10 +63,13 @@ export default async function getInfo(id: string) {
         if (parts.length === 3) {
           paths.unshift(`/embed/tv/${parts[0]}/${parts[1]}/${parts[2]}`);
           paths.unshift(`/v/${parts[0]}/${parts[1]}/${parts[2]}`);
+          paths.unshift(`/watch/${parts[0]}/${parts[1]}/${parts[2]}`);
           paths.push(`/play/${parts[0]}-${parts[1]}-${parts[2]}`);
         }
-      } else if (!paths.includes(`/embed/movie/${id}`)) {
-        paths.unshift(`/embed/movie/${id}`);
+      } else {
+        // Ensure embed/movie is tried early
+        if (!paths.includes(`/embed/movie/${id}`)) paths.unshift(`/embed/movie/${id}`);
+        if (!paths.includes(`/embed/${id}`)) paths.unshift(`/embed/${id}`);
       }
 
       // Retry mechanism for each path
@@ -80,23 +95,53 @@ export default async function getInfo(id: string) {
             let file: string | null = null;
             let key: string | null = null;
 
-            // Priority 1: HLS/Manifest links (the gold standard)
-            const manifestMatch = html.match(/["']?(?:file|link|source|url|src)["']?\s*[:=]\s*["']([^"']+\.(?:txt|m3u8|json|php)[^"']*)["']/i);
+            const extractFromText = (text: string) => {
+              // Broad regexes to capture many site variants (attributes, JS, JWPlayer setups, data-* attrs)
+              const regexes: RegExp[] = [
+                /["']?(?:file|link|source|url|src|data-file|data-src|data-url)["']?\s*[:=]\s*["']([^"']+\.(?:txt|m3u8|json|php|js)[^"']*)["']/i,
+                /<source[^>]+src=["']([^"']+\.(?:m3u8|mp4|txt|json|php|js))["']/i,
+                /href=["']([^"']+\.(?:m3u8|txt|json|php|js))["']/i,
+                /jwplayer\([^)]*\)\.setup\(\s*{[^}]*file\s*:\s*["']([^"']+)["']/i,
+                /data-(?:file|src|url)=["']([^"']+)["']/i,
+                /['"]?(?:playlist|sources)['"]?\s*[:=]\s*(\[[^\]]+\])/i
+              ];
 
-            // Priority 2: Streaming Object/Variable
-            const objectMatch = html.match(/["']?sources["']?\s*[:=]\s*\[\s*{\s*["']?file["']?\s*:\s*["']([^"']+)["']/i);
+              for (const r of regexes) {
+                const m = text.match(r);
+                if (m && m[1]) return m[1];
+              }
+              return null;
+            };
 
-            // Priority 3: CSRF/Security Key
-            const keyMatch = html.match(/["']?(?:key|token|csrf|hash|auth)["']?\s*[:=]\s*["']([^"']+)["']/i);
+            // Try HTML first
+            file = extractFromText(html);
 
-            file = (manifestMatch ? manifestMatch[1] : (objectMatch ? objectMatch[1] : null));
-            key = keyMatch ? keyMatch[1] : "NOT_REQUIRED"; // Some fallback providers don't need a key
+            // CSRF/key detection (expand to meta tags and JS variables)
+            const keyMatch = html.match(/["']?(?:key|token|csrf|hash|auth)["']?\s*[:=]\s*["']([^"']+)["']/i) || html.match(/<meta[^>]+name=["']csrf-token["'][^>]+content=["']([^"']+)["']/i);
+            key = keyMatch ? keyMatch[1] : "NOT_REQUIRED";
 
-            if (file && !file.endsWith('.js')) {
+            // If file points to a JS file, fetch it and try extracting again
+            if (file && file.endsWith('.js')) {
+              try {
+                const jsUrl = file.startsWith('http') ? file : `${currentDomain}${file}`;
+                const jsResp = await axios.get(jsUrl, { headers: { ...headers, "Referer": targetUrl }, httpAgent: torAgent, httpsAgent: torAgent, timeout: 15000 });
+                const jsBody = typeof jsResp.data === 'string' ? jsResp.data : JSON.stringify(jsResp.data);
+                const fromJs = extractFromText(jsBody);
+                if (fromJs) {
+                  file = fromJs;
+                } else {
+                  // keep original JS if nothing found inside
+                }
+              } catch (e) {
+                console.log(`[getInfo] Failed to fetch/parse JS candidate ${file}: ${e.message}`);
+              }
+            }
+
+            if (file) {
               file = file.replace(/\\\//g, "/");
               const playlistUrl = file.startsWith("http") ? file : `${currentDomain}${file}`;
 
-              console.log(`[getInfo] Candidate Found! File: ${file.substring(0, 50)}...`);
+              console.log(`[getInfo] Candidate Found! File: ${file.substring(0, 120)}...`);
 
               try {
                 const playlistRes = await axios.get(playlistUrl, {
