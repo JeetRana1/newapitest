@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import getInfo from "../lib/getInfo";
 import { resolveTmdbToImdb } from "../lib/tmdbResolver";
+import cache from "../lib/cache";
 
 export default async function mediaInfo(req: Request, res: Response) {
   let { id, type } = req.query;
@@ -9,6 +10,14 @@ export default async function mediaInfo(req: Request, res: Response) {
       success: false,
       message: "Please provide a valid id",
     });
+  }
+
+  // Create cache key for the entire mediaInfo request
+  const cacheKey = `mediaInfo_${id}_${type || 'movie'}`;
+  const cachedResult = cache.get(cacheKey);
+  if (cachedResult) {
+    console.log(`[mediaInfo] Returning cached result for ID: ${id}`);
+    return res.json(cachedResult);
   }
 
   try {
@@ -22,12 +31,28 @@ export default async function mediaInfo(req: Request, res: Response) {
     console.log(`Received request for ID: ${id} (Resolved: ${finalId})`);
     const data = await getInfo(finalId);
     console.log(`Response data:`, data);
+    
+    // Cache the result if successful
+    if (data.success) {
+      cache.set(cacheKey, data, 30 * 60 * 1000); // Cache successful results for 30 minutes
+    } else {
+      // Cache failed results for shorter duration to allow retries
+      cache.set(cacheKey, data, 5 * 60 * 1000); // Cache failed results for 5 minutes
+    }
+    
     res.json(data);
   } catch (err) {
     console.log("error in mediaInfo: ", err);
-    res.status(500).json({
+    
+    // Send error response
+    const errorResponse = {
       success: false,
       message: "Internal server error: " + (err instanceof Error ? err.message : String(err)),
-    });
+    };
+    
+    // Cache the error response for a short time to prevent repeated error requests
+    cache.set(cacheKey, errorResponse, 2 * 60 * 1000); // Cache error for 2 minutes
+    
+    res.status(500).json(errorResponse);
   }
 }

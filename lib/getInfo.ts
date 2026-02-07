@@ -1,10 +1,18 @@
 import axios from "axios";
 import { getPlayerUrl } from "./getPlayerUrl";
 import { SocksProxyAgent } from 'socks-proxy-agent';
+import cache from './cache';
 
 const torAgent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
 
 export default async function getInfo(id: string) {
+  // Check cache first
+  const cachedResult = cache.get(`getInfo_${id}`);
+  if (cachedResult) {
+    console.log(`[getInfo] Returning cached result for ID: ${id}`);
+    return cachedResult;
+  }
+
   try {
     const playerUrl = await getPlayerUrl();
 
@@ -29,6 +37,7 @@ export default async function getInfo(id: string) {
     // 2. Intelligence: Detect if it's a TV show ID or Missing Season/Ep
     const isExplicitTV = id.includes('-');
 
+    // Retry mechanism for each domain
     for (let currentDomain of domains) {
       if (!currentDomain) continue;
       currentDomain = currentDomain.replace(/\/$/, '');
@@ -53,126 +62,153 @@ export default async function getInfo(id: string) {
         paths.unshift(`/embed/movie/${id}`);
       }
 
+      // Retry mechanism for each path
       for (const path of paths) {
         const targetUrl = `${currentDomain}${path}`;
-        try {
-          console.log(`[getInfo] Scanning: ${targetUrl}`);
+        
+        // Multiple attempts for each path to improve reliability
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            console.log(`[getInfo] Scanning: ${targetUrl} (Attempt ${attempt})`);
 
-          const response = await axios.get(targetUrl, {
-            headers,
-            httpAgent: torAgent,
-            httpsAgent: torAgent,
-            timeout: 15000,
-            validateStatus: (s) => s === 200
-          });
+            const response = await axios.get(targetUrl, {
+              headers,
+              httpAgent: torAgent,
+              httpsAgent: torAgent,
+              timeout: 15000,
+              validateStatus: (s) => s === 200
+            });
 
-          const html = response.data.toString();
+            const html = response.data.toString();
 
-          // 4. Ultra-Aggressive Extraction
-          let file: string | null = null;
-          let key: string | null = null;
+            // 4. Ultra-Aggressive Extraction
+            let file: string | null = null;
+            let key: string | null = null;
 
-          // Priority 1: HLS/Manifest links (the gold standard)
-          const manifestMatch = html.match(/["']?(?:file|link|source|url|src)["']?\s*[:=]\s*["']([^"']+\.(?:txt|m3u8|json|php)[^"']*)["']/i);
+            // Priority 1: HLS/Manifest links (the gold standard)
+            const manifestMatch = html.match(/["']?(?:file|link|source|url|src)["']?\s*[:=]\s*["']([^"']+\.(?:txt|m3u8|json|php)[^"']*)["']/i);
 
-          // Priority 2: Streaming Object/Variable
-          const objectMatch = html.match(/["']?sources["']?\s*[:=]\s*\[\s*{\s*["']?file["']?\s*:\s*["']([^"']+)["']/i);
+            // Priority 2: Streaming Object/Variable
+            const objectMatch = html.match(/["']?sources["']?\s*[:=]\s*\[\s*{\s*["']?file["']?\s*:\s*["']([^"']+)["']/i);
 
-          // Priority 3: CSRF/Security Key
-          const keyMatch = html.match(/["']?(?:key|token|csrf|hash|auth)["']?\s*[:=]\s*["']([^"']+)["']/i);
+            // Priority 3: CSRF/Security Key
+            const keyMatch = html.match(/["']?(?:key|token|csrf|hash|auth)["']?\s*[:=]\s*["']([^"']+)["']/i);
 
-          file = (manifestMatch ? manifestMatch[1] : (objectMatch ? objectMatch[1] : null));
-          key = keyMatch ? keyMatch[1] : "NOT_REQUIRED"; // Some fallback providers don't need a key
+            file = (manifestMatch ? manifestMatch[1] : (objectMatch ? objectMatch[1] : null));
+            key = keyMatch ? keyMatch[1] : "NOT_REQUIRED"; // Some fallback providers don't need a key
 
-          if (file && !file.endsWith('.js')) {
-            file = file.replace(/\\\//g, "/");
-            const playlistUrl = file.startsWith("http") ? file : `${currentDomain}${file}`;
+            if (file && !file.endsWith('.js')) {
+              file = file.replace(/\\\//g, "/");
+              const playlistUrl = file.startsWith("http") ? file : `${currentDomain}${file}`;
 
-            console.log(`[getInfo] Candidate Found! File: ${file.substring(0, 50)}...`);
+              console.log(`[getInfo] Candidate Found! File: ${file.substring(0, 50)}...`);
 
-            try {
-              const playlistRes = await axios.get(playlistUrl, {
-                headers: { ...headers, "X-Csrf-Token": key, "Referer": targetUrl },
-                httpAgent: torAgent,
-                httpsAgent: torAgent,
-                timeout: 15000
-              });
-
-              let data = playlistRes.data;
-              let playlist: any[] = [];
-
-              // Decode Base64 if needed
-              if (typeof data === 'string' && data.length > 50 && !data.includes('http') && !data.includes('{')) {
-                try {
-                  const decoded = Buffer.from(data, 'base64').toString('utf-8');
-                  if (decoded.includes('http') || decoded.includes('{')) data = decoded;
-                } catch (e) { }
-              }
-
-              // Parse list
-              if (Array.isArray(data)) {
-                playlist = data;
-              } else if (typeof data === 'object' && data !== null) {
-                playlist = data.playlist || data.data || (data.sources ? data.sources : []);
-              } else if (typeof data === 'string') {
-                const trimmed = data.trim();
-                if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-                  try {
-                    const jsonData = JSON.parse(trimmed);
-                    playlist = Array.isArray(jsonData) ? jsonData : (jsonData.playlist || jsonData.data || []);
-                  } catch (e) { }
-                }
-                if (playlist.length === 0 && (trimmed.includes('http') || trimmed.includes('.m3u8'))) {
-                  playlist = [{ file: trimmed, label: 'Auto' }];
-                }
-              }
-
-              // 4. PRE-VERIFY: Check if the stream actually plays before returning success
               try {
-                const verifyRes = await axios.get(playlistUrl, {
+                const playlistRes = await axios.get(playlistUrl, {
                   headers: { ...headers, "X-Csrf-Token": key, "Referer": targetUrl },
                   httpAgent: torAgent,
                   httpsAgent: torAgent,
-                  timeout: 5000,
-                  validateStatus: (status) => status < 400
+                  timeout: 15000
                 });
-              } catch (e: any) {
-                if (e.response?.status === 403 || e.response?.status === 404) {
-                  console.log(`[getInfo] Mirror ${currentDomain} found a link, but it's dead (${e.response?.status}). Skipping...`);
-                  continue;
+
+                let data = playlistRes.data;
+                let playlist: any[] = [];
+
+                // Decode Base64 if needed
+                if (typeof data === 'string' && data.length > 50 && !data.includes('http') && !data.includes('{')) {
+                  try {
+                    const decoded = Buffer.from(data, 'base64').toString('utf-8');
+                    if (decoded.includes('http') || decoded.includes('{')) data = decoded;
+                  } catch (e) { }
                 }
-              }
 
-              if (playlist.length > 0) {
-                console.log(`[getInfo] Success! Found verified stream on ${currentDomain}`);
-
-                // CRITICAL: Encode the referer into the file URLs so the Proxy knows how to "handshake"
-                const optimizedPlaylist = playlist.map((item: any) => {
-                  if (item.file && !item.file.includes('proxy_ref=')) {
-                    const separator = item.file.includes('?') ? '&' : '?';
-                    item.file = `${item.file}${separator}proxy_ref=${encodeURIComponent(currentDomain)}`;
+                // Parse list
+                if (Array.isArray(data)) {
+                  playlist = data;
+                } else if (typeof data === 'object' && data !== null) {
+                  playlist = data.playlist || data.data || (data.sources ? data.sources : []);
+                } else if (typeof data === 'string') {
+                  const trimmed = data.trim();
+                  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+                    try {
+                      const jsonData = JSON.parse(trimmed);
+                      playlist = Array.isArray(jsonData) ? jsonData : (jsonData.playlist || jsonData.data || []);
+                    } catch (e) { }
                   }
-                  return item;
-                });
+                  if (playlist.length === 0 && (trimmed.includes('http') || trimmed.includes('.m3u8'))) {
+                    playlist = [{ file: trimmed, label: 'Auto' }];
+                  }
+                }
 
-                return { success: true, data: { playlist: optimizedPlaylist, key } };
+                // 4. PRE-VERIFY: Check if the stream actually plays before returning success
+                try {
+                  const verifyRes = await axios.get(playlistUrl, {
+                    headers: { ...headers, "X-Csrf-Token": key, "Referer": targetUrl },
+                    httpAgent: torAgent,
+                    httpsAgent: torAgent,
+                    timeout: 5000,
+                    validateStatus: (status) => status < 400
+                  });
+                } catch (e: any) {
+                  if (e.response?.status === 403 || e.response?.status === 404) {
+                    console.log(`[getInfo] Mirror ${currentDomain} found a link, but it's dead (${e.response?.status}). Skipping...`);
+                    continue;
+                  }
+                }
+
+                if (playlist.length > 0) {
+                  console.log(`[getInfo] Success! Found verified stream on ${currentDomain}`);
+
+                  // CRITICAL: Encode the referer into the file URLs so the Proxy knows how to "handshake"
+                  const optimizedPlaylist = playlist.map((item: any) => {
+                    if (item.file && !item.file.includes('proxy_ref=')) {
+                      const separator = item.file.includes('?') ? '&' : '?';
+                      item.file = `${item.file}${separator}proxy_ref=${encodeURIComponent(currentDomain)}`;
+                    }
+                    return item;
+                  });
+
+                  const result = { success: true, data: { playlist: optimizedPlaylist, key } };
+                  
+                  // Cache the successful result for 30 minutes
+                  cache.set(`getInfo_${id}`, result, 30 * 60 * 1000);
+                  
+                  return result;
+                }
+              } catch (playlistErr: any) {
+                // Silence playlist 404s, keep searching
+                console.log(`[getInfo] Playlist error for ${playlistUrl}: ${playlistErr.message}`);
               }
-            } catch (playlistErr: any) {
-              // Silence playlist 404s, keep searching
+            }
+          } catch (e: any) {
+            // Log the error but continue to next attempt
+            console.log(`[getInfo] Attempt ${attempt} failed for ${targetUrl}: ${e.message}`);
+            
+            // If this was the last attempt for this path, continue to next path
+            if (attempt >= 3) {
+              console.log(`[getInfo] All attempts failed for ${targetUrl}. Moving to next path.`);
             }
           }
-        } catch (e: any) {
-          // Skip 404s and keep searching other mirrors
         }
       }
     }
 
-    return {
+    const result = {
       success: false,
       message: "Media not found on any mirror. Try providing ID in tt1234567-S-E format for TV shows."
     };
+    
+    // Cache the failure result for 5 minutes to prevent repeated requests
+    cache.set(`getInfo_${id}`, result, 5 * 60 * 1000);
+    
+    return result;
 
   } catch (error: any) {
-    return { success: false, message: `Scraper error: ${error.message}` };
+    const result = { success: false, message: `Scraper error: ${error.message}` };
+    
+    // Cache the error result for 5 minutes to prevent repeated requests
+    cache.set(`getInfo_${id}`, result, 5 * 60 * 1000);
+    
+    return result;
   }
 }

@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import getInfo from "../lib/getInfo";
+import cache from "../lib/cache";
 
 export default async function getSeasonList(req: Request, res: Response) {
   const { id } = req.query;
@@ -9,14 +10,33 @@ export default async function getSeasonList(req: Request, res: Response) {
       message: "Please provide a valid id",
     });
   }
+
+  // Check cache first
+  const cacheKey = `getSeasonList_${id}`;
+  const cachedResult = cache.get(cacheKey);
+  if (cachedResult) {
+    console.log(`[getSeasonList] Returning cached result for ID: ${id}`);
+    return res.json(cachedResult);
+  }
+
   try {
     const mediaInfo = await getInfo(id as string);
     if (!mediaInfo.success) {
-      return res.json({ success: false, message: "Media not found" });
+      const errorResult = { success: false, message: "Media not found" };
+      
+      // Cache the error result for 5 minutes
+      cache.set(cacheKey, errorResult, 5 * 60 * 1000);
+      
+      return res.json(errorResult);
     }
     const playlist = mediaInfo?.data?.playlist;
     if (!playlist) {
-      return res.json({ success: false, message: "No content found" });
+      const errorResult = { success: false, message: "No content found" };
+      
+      // Cache the error result for 5 minutes
+      cache.set(cacheKey, errorResult, 5 * 60 * 1000);
+      
+      return res.json(errorResult);
     }
     // if series
     const seasons: { season: string; totalEpisodes: number; lang: string[] }[] =
@@ -34,17 +54,22 @@ export default async function getSeasonList(req: Request, res: Response) {
           lang,
         });
       });
-      return res.json({
+      const result = {
         success: true,
         data: { seasons, type: "tv" },
-      });
+      };
+      
+      // Cache the result for 30 minutes
+      cache.set(cacheKey, result, 30 * 60 * 1000);
+      
+      return res.json(result);
     } else {
       // if movie
       let lang: string[] = [];
       playlist?.forEach((item: any) => {
         if (item?.title) lang.push(item.title);
       });
-      return res.json({
+      const result = {
         success: true,
         data: {
           seasons: [
@@ -54,13 +79,24 @@ export default async function getSeasonList(req: Request, res: Response) {
           ],
           type: "movie",
         },
-      });
+      };
+      
+      // Cache the result for 30 minutes
+      cache.set(cacheKey, result, 30 * 60 * 1000);
+      
+      return res.json(result);
     }
   } catch (err) {
     console.log("error: ", err);
-    res.json({
+    
+    const errorResult = {
       success: false,
       message: "Internal server error",
-    });
+    };
+    
+    // Cache the error result for 2 minutes
+    cache.set(cacheKey, errorResult, 2 * 60 * 1000);
+    
+    res.json(errorResult);
   }
 }

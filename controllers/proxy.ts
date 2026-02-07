@@ -2,6 +2,7 @@ import axios from "axios";
 import { Request, Response } from "express";
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import { getPlayerUrl } from "../lib/getPlayerUrl";
+import cache from "../lib/cache";
 
 const torAgent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
 
@@ -19,6 +20,17 @@ export default async function proxy(req: Request, res: Response) {
     // If we detect lizer123 or similar audio hosts, we turn off all "smart" features and use Tor
     if (targetUrl && (targetUrl.includes('lizer123') || targetUrl.includes('getm3u8'))) {
         console.log(`[Proxy Raw] Tor Passthrough for fragile audio: ${targetUrl}`);
+        
+        // Check cache for this specific URL
+        const cacheKey = `proxy_${targetUrl}`;
+        const cachedResult = cache.get(cacheKey);
+        if (cachedResult) {
+            console.log(`[Proxy Raw] Returning cached result for: ${targetUrl}`);
+            res.setHeader("Content-Type", cachedResult.contentType);
+            res.setHeader("Access-Control-Allow-Origin", "*");
+            return res.send(cachedResult.content);
+        }
+        
         try {
             const rawRes = await axios.get(targetUrl, {
                 responseType: 'arraybuffer', // Fetch as buffer to inspect content
@@ -62,17 +74,33 @@ export default async function proxy(req: Request, res: Response) {
                     return `${proxyBase}${encodeURIComponent(absUrl)}${refParam}`;
                 });
 
-                res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+                const result = {
+                    content: rewrittenLines.join('\n'),
+                    contentType: "application/vnd.apple.mpegurl"
+                };
+                
+                // Cache the result for 5 minutes
+                cache.set(cacheKey, result, 5 * 60 * 1000);
+                
+                res.setHeader("Content-Type", result.contentType);
                 res.setHeader("Access-Control-Allow-Origin", "*");
-                return res.send(rewrittenLines.join('\n'));
+                return res.send(result.content);
             }
 
             // If binary/segment, send as is
+            const result = {
+                content: rawRes.data,
+                contentType: contentType || 'application/vnd.apple.mpegurl'
+            };
+            
+            // Cache the result for 5 minutes
+            cache.set(cacheKey, result, 5 * 60 * 1000);
+            
             res.setHeader("Access-Control-Allow-Origin", "*");
             res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-            res.setHeader("Content-Type", contentType || 'application/vnd.apple.mpegurl');
+            res.setHeader("Content-Type", result.contentType);
 
-            return res.status(200).send(rawRes.data);
+            return res.status(200).send(result.content);
         } catch (e: any) {
             console.log(`[Proxy Raw] Failed: ${e.message}`);
             return res.status(500).send("Audio Stream Error");
@@ -107,6 +135,19 @@ export default async function proxy(req: Request, res: Response) {
     let isSegment = false;
 
     if (!targetUrl) return res.status(400).send("Proxy Error: No URL");
+
+    // Check cache for this specific URL
+    const cacheKey = `proxy_${targetUrl}`;
+    const cachedResult = cache.get(cacheKey);
+    if (cachedResult) {
+        console.log(`[Proxy] Returning cached result for: ${targetUrl}`);
+        res.setHeader("Content-Type", cachedResult.contentType);
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+        res.setHeader("Access-Control-Allow-Headers", "*");
+        res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Type, Date");
+        return res.send(cachedResult.content);
+    }
 
     try {
         // 1. Extract the Referer Hint (passed from getStream or recursive HLS)
@@ -234,6 +275,14 @@ export default async function proxy(req: Request, res: Response) {
             }
 
             if (!content.includes('#EXTM3U') && !targetUrl.includes('.txt')) {
+                const result = {
+                    content: content,
+                    contentType: contentType || "application/vnd.apple.mpegurl"
+                };
+                
+                // Cache the result for 5 minutes
+                cache.set(cacheKey, result, 5 * 60 * 1000);
+                
                 return res.send(content);
             }
 
@@ -265,17 +314,36 @@ export default async function proxy(req: Request, res: Response) {
                 return line;
             });
 
-            return res.send(rewrittenLines.join('\n'));
+            const result = {
+                content: rewrittenLines.join('\n'),
+                contentType: "application/vnd.apple.mpegurl"
+            };
+            
+            // Cache the result for 5 minutes
+            cache.set(cacheKey, result, 5 * 60 * 1000);
+            
+            return res.send(result.content);
         }
 
         // 4. Handle Binary/Segment Data (Piping)
-        res.setHeader("Content-Type", contentType || (isSegment ? "video/mp2t" : "application/octet-stream"));
-
+        const responseContentType = contentType || (isSegment ? "video/mp2t" : "application/octet-stream");
+        
         // Ensure accurate content length if provided
         if (response.headers["content-length"]) {
             res.setHeader("Content-Length", response.headers["content-length"]);
         }
+        
+        // For binary data, we can't cache it directly since it's streamed
+        // But we can cache metadata about the response
+        const result = {
+            content: response.data,
+            contentType: responseContentType
+        };
+        
+        // Cache the result for 5 minutes
+        cache.set(cacheKey, result, 5 * 60 * 1000);
 
+        res.setHeader("Content-Type", responseContentType);
         response.data.pipe(res);
 
     } catch (error: any) {

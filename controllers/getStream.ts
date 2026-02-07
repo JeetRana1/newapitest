@@ -2,6 +2,7 @@ import axios from "axios";
 import { Request, Response } from "express";
 import { getPlayerUrl } from "../lib/getPlayerUrl";
 import { SocksProxyAgent } from 'socks-proxy-agent';
+import cache from "../lib/cache";
 
 const torAgent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
 
@@ -9,6 +10,14 @@ export default async function getStream(req: Request, res: Response) {
   const { file, key } = req.body;
   if (!file || !key) {
     return res.json({ success: false, message: "Please provide a valid file and key" });
+  }
+
+  // Create cache key for the stream request
+  const cacheKey = `getStream_${file}_${key}`;
+  const cachedResult = cache.get(cacheKey);
+  if (cachedResult) {
+    console.log(`[getStream] Returning cached result for file: ${file.substring(0, 30)}...`);
+    return res.json(cachedResult);
   }
 
   try {
@@ -56,14 +65,25 @@ export default async function getStream(req: Request, res: Response) {
     const proxySuffix = proxyRef ? `&proxy_ref=${encodeURIComponent(proxyRef)}` : "";
     const proxiedLink = `https://${host}/api/v1/proxy?url=${encodeURIComponent(finalStreamUrl)}${proxySuffix}`;
 
-    res.json({
+    const result = {
       success: true,
       data: {
         link: proxiedLink,
       },
-    });
+    };
+
+    // Cache the successful result for 10 minutes
+    cache.set(cacheKey, result, 10 * 60 * 1000);
+
+    res.json(result);
   } catch (err: any) {
     console.log(`[getStream] Error: ${err.message}`);
-    res.json({ success: false, message: "Stream link is currently unavailable." });
+    
+    const errorResult = { success: false, message: "Stream link is currently unavailable." };
+    
+    // Cache the error result for 2 minutes to prevent repeated requests
+    cache.set(cacheKey, errorResult, 2 * 60 * 1000);
+    
+    res.json(errorResult);
   }
 }

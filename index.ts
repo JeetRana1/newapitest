@@ -3,6 +3,7 @@ import cors from "cors";
 import dotenv from "dotenv";
 import router from "./routes/route";
 import rateLimit from "express-rate-limit";
+import cache from "./lib/cache";
 
 const app = express();
 
@@ -27,6 +28,19 @@ app.use(express.json());
 // }
 app.get("/", (req, res) => {
   res.send("its ok");
+});
+
+// Endpoint to clear cache (for debugging purposes)
+app.get("/admin/clear-cache", (req, res) => {
+  const adminKey = process.env.ADMIN_KEY || "admin123"; // Default key for development
+  const providedKey = req.query.key as string;
+  
+  if (providedKey === adminKey) {
+    cache.clear();
+    res.json({ success: true, message: "Cache cleared successfully" });
+  } else {
+    res.status(401).json({ success: false, message: "Unauthorized" });
+  }
 });
 
 // Alias for relative path streaming (catches /stream/ requests from root)
