@@ -11,6 +11,21 @@ const proxyVidsrcReferer = (process.env.PROXY_VIDSRC_REFERER || "").trim();
 const proxyVidlinkReferer = (process.env.PROXY_VIDLINK_REFERER || "").trim();
 const proxySuperembedReferer = (process.env.PROXY_SUPEREMBED_REFERER || "").trim();
 
+function extractManifestUrlFromPayload(payload: string): string {
+    const text = payload.trim();
+    if (!text) return "";
+    if (text.startsWith("http")) return text.split(/\s+/)[0];
+
+    try {
+        const parsed = JSON.parse(text);
+        const candidate = parsed?.file || parsed?.url || parsed?.src || parsed?.link || "";
+        if (typeof candidate === "string" && candidate.startsWith("http")) return candidate;
+    } catch { }
+
+    const match = text.match(/https?:\/\/[^\s"'\\]+/i);
+    return match?.[0] || "";
+}
+
 function getOriginSafe(raw: string): string | null {
     try {
         return new URL(raw).origin;
@@ -198,7 +213,8 @@ export default async function proxy(req: Request, res: Response) {
         const proxyRef = req.query.proxy_ref as string;
 
         // 2. Identify file types and generate smart headers
-        const isM3U8 = targetUrl.includes('.m3u8') || targetUrl.includes('.txt');
+        const looksTokenStream = targetUrl.includes('/stream/');
+        const isM3U8 = targetUrl.includes('.m3u8') || targetUrl.includes('.txt') || looksTokenStream;
         isSegment = targetUrl.includes('.ts') || targetUrl.includes('.mp4');
 
         const getProxyHeaders = (url: string) => {
@@ -332,7 +348,28 @@ export default async function proxy(req: Request, res: Response) {
             }
 
             if (!content.includes('#EXTM3U') && !targetUrl.includes('.txt')) {
-                return res.send(content);
+                const extractedManifestUrl = extractManifestUrlFromPayload(content);
+                if (extractedManifestUrl) {
+                    console.log(`[Proxy Manifest] Unwrapped nested manifest URL: ${extractedManifestUrl}`);
+                    let nestedResponse: any = null;
+                    try {
+                        nestedResponse = await tryFetch(extractedManifestUrl, true);
+                    } catch {
+                        nestedResponse = await tryFetch(extractedManifestUrl, false);
+                    }
+
+                    targetUrl = nestedResponse?.request?.res?.responseUrl || extractedManifestUrl;
+                    contentType = nestedResponse?.headers?.["content-type"] || contentType;
+                    content = typeof nestedResponse?.data === "string"
+                        ? nestedResponse.data
+                        : Buffer.isBuffer(nestedResponse?.data)
+                            ? nestedResponse.data.toString("utf-8")
+                            : String(nestedResponse?.data || "");
+                }
+            }
+
+            if (!content.includes('#EXTM3U') && !targetUrl.includes('.txt')) {
+                throw new Error(`Upstream returned non-HLS payload for manifest URL: ${targetUrl}`);
             }
 
             res.setHeader("Content-Type", "application/vnd.apple.mpegurl");

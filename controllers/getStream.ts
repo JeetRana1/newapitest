@@ -119,6 +119,16 @@ function buildUpstreamTokenStreamCandidates(baseDomain: string, token: string): 
   return Array.from(new Set(candidates));
 }
 
+function isLikelyHlsResponse(response: any, requestedUrl: string): boolean {
+  const contentType = String(response?.headers?.["content-type"] || "").toLowerCase();
+  const finalUrl = String(response?.request?.res?.responseUrl || requestedUrl);
+  const body = typeof response?.data === "string" ? response.data : "";
+  if (contentType.includes("mpegurl") || contentType.includes("application/x-mpegurl")) return true;
+  if (body.includes("#EXTM3U")) return true;
+  if (finalUrl.includes(".m3u8")) return true;
+  return false;
+}
+
 export default async function getStream(req: Request, res: Response) {
   const { file, key } = req.body;
 
@@ -220,10 +230,11 @@ export default async function getStream(req: Request, res: Response) {
                     "Accept": "*/*",
                     ...(isDirectFallbackKey ? {} : { "X-Csrf-Token": key }),
                   },
+                  responseType: "text",
                   timeout: 12000,
                 });
 
-                if (response.status >= 200 && response.status < 400) {
+                if (response.status >= 200 && response.status < 400 && isLikelyHlsResponse(response, streamUrl)) {
                   finalStreamUrl = streamUrl;
                   usedProxyRef = streamBase;
                   break;
