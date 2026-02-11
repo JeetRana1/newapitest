@@ -4,6 +4,11 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 import { getPlayerUrl } from "../lib/getPlayerUrl";
 
 const torAgent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
+const proxyDefaultReferer = (process.env.PROXY_DEFAULT_REFERER || "").trim();
+const proxySlimeReferer = (process.env.PROXY_SLIME_REFERER || "").trim();
+const proxyVidsrcReferer = (process.env.PROXY_VIDSRC_REFERER || "").trim();
+const proxyVidlinkReferer = (process.env.PROXY_VIDLINK_REFERER || "").trim();
+const proxySuperembedReferer = (process.env.PROXY_SUPEREMBED_REFERER || "").trim();
 
 /**
  * Proxy controller optimized for stability and reliability.
@@ -130,18 +135,18 @@ export default async function proxy(req: Request, res: Response) {
             const uri = new URL(url);
             // Use the hint from the query param if available - MOST RELIABLE
             // This bypasses the need for the frontend to set tricky headers
-            let referer = proxyRef || "https://allmovieland.link/";
+            let referer = proxyRef || proxyDefaultReferer || `https://${uri.host}/`;
 
             if (!proxyRef) {
                 // Dynamic Referer Intelligence (Fallback only)
                 if (url.includes('slime') || url.includes('vekna')) {
-                    referer = `https://${url.includes('slime') ? 'vekna402las.com' : uri.host}/`;
+                    referer = proxySlimeReferer || `https://${uri.host}/`;
                 } else if (url.includes('vidsrc')) {
-                    referer = "https://vidsrc.me/";
+                    referer = proxyVidsrcReferer || `https://${uri.host}/`;
                 } else if (url.includes('vidlink')) {
-                    referer = "https://vidlink.pro/";
+                    referer = proxyVidlinkReferer || `https://${uri.host}/`;
                 } else if (url.includes('superembed')) {
-                    referer = "https://superembed.stream/";
+                    referer = proxySuperembedReferer || `https://${uri.host}/`;
                 } else {
                     referer = `https://${uri.host}/`;
                 }

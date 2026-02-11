@@ -9,6 +9,18 @@ export default async function getInfo(id: string) {
   try {
     const playerUrl = await getPlayerUrl();
     const paths = [`/play/${id}`, `/v/${id}`, `/watch/${id}`];
+    const playerOrigin = (() => {
+      try {
+        return new URL(playerUrl).origin;
+      } catch {
+        return "";
+      }
+    })();
+    const defaultReferer = playerOrigin ? `${playerOrigin}/` : "";
+    const referers = (process.env.INFO_REFERERS || defaultReferer)
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
 
     let lastError: any = null;
 
@@ -17,7 +29,9 @@ export default async function getInfo(id: string) {
       console.log(`[getInfo] Trying path: ${targetUrl}`);
 
       // Try with Tor first for better bypass
-      const referers = ["https://allmovieland.link/", "https://google.com/"];
+      if (referers.length === 0) {
+        throw new Error("INFO_REFERERS is not configured and player origin could not be derived");
+      }
 
       for (const referer of referers) {
         try {

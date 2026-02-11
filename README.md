@@ -29,6 +29,16 @@ PORT=7860
 TMDB_API_KEY=your_tmdb_api_key_here
 ADMIN_KEY=your_admin_key_for_cache_clearing
 BASE_URL=https://allmovieland.link/player.js
+SCRAPER_REFERER=https://allmovieland.link/
+SCRAPER_ORIGIN=https://allmovieland.link
+PLAYER_FALLBACK_URLS=https://allmovieland.link/player.js,https://allmovieland.io/player.js
+PLAYER_HARDCODED_FALLBACK=https://vekna402las.com
+INFO_REFERERS=https://allmovieland.link/,https://google.com/
+PROXY_DEFAULT_REFERER=https://allmovieland.link/
+PROXY_SLIME_REFERER=https://vekna402las.com/
+PROXY_VIDSRC_REFERER=https://vidsrc.me/
+PROXY_VIDLINK_REFERER=https://vidlink.pro/
+PROXY_SUPEREMBED_REFERER=https://superembed.stream/
 ```
 
 4. Build and run the application:
