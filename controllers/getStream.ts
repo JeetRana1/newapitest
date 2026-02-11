@@ -2,8 +2,10 @@ import axios from "axios";
 import { Request, Response } from "express";
 import { getPlayerUrl } from "../lib/getPlayerUrl";
 import { SocksProxyAgent } from 'socks-proxy-agent';
+import cache from "../lib/cache";
 
 const torAgent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
+const STREAM_CACHE_TTL_MS = 10 * 60 * 1000;
 
 export default async function getStream(req: Request, res: Response) {
   const { file, key } = req.body;
@@ -28,24 +30,44 @@ export default async function getStream(req: Request, res: Response) {
     if (token.startsWith('http')) {
       finalStreamUrl = token;
     } else {
+      const streamCacheKey = `stream_url_${token}_${proxyRef || "none"}`;
+      const cachedStreamUrl = cache.get(streamCacheKey);
+      if (cachedStreamUrl) {
+        finalStreamUrl = cachedStreamUrl;
+      } else {
       // New logic: fetch token from mirror
-      const baseDomain = (proxyRef && proxyRef !== '' ? proxyRef : await getPlayerUrl()).replace(/\/$/, '');
-      const path = token.startsWith('~') ? token.slice(1) : token;
-      const playlistUrl = `${baseDomain}/playlist/${path}.txt`;
+        const baseDomain = (proxyRef && proxyRef !== '' ? proxyRef : await getPlayerUrl()).replace(/\/$/, '');
+        const path = token.startsWith('~') ? token.slice(1) : token;
+        const playlistUrl = `${baseDomain}/playlist/${path}.txt`;
 
-      console.log(`[getStream] Mirroring from: ${baseDomain}`);
-      const response = await axios.get(playlistUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-          "Referer": baseDomain + "/",
-          "X-Csrf-Token": key
-        },
-        httpAgent: torAgent,
-        httpsAgent: torAgent,
-        timeout: 15000,
-      });
+        console.log(`[getStream] Mirroring from: ${baseDomain}`);
+        const requestConfig = {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "Referer": baseDomain + "/",
+            "X-Csrf-Token": key
+          },
+          timeout: 8000,
+        };
 
-      finalStreamUrl = response.data;
+        let response;
+        try {
+          response = await axios.get(playlistUrl, requestConfig);
+        } catch {
+          response = await axios.get(playlistUrl, {
+            ...requestConfig,
+            httpAgent: torAgent,
+            httpsAgent: torAgent,
+            timeout: 12000,
+          });
+        }
+
+        finalStreamUrl = response.data;
+
+        if (typeof finalStreamUrl === "string" && finalStreamUrl.startsWith("http")) {
+          cache.set(streamCacheKey, finalStreamUrl, STREAM_CACHE_TTL_MS);
+        }
+      }
     }
 
     if (!finalStreamUrl || typeof finalStreamUrl !== 'string' || !finalStreamUrl.startsWith('http')) {

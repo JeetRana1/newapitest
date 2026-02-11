@@ -1,6 +1,21 @@
 import axios from "axios";
+import cache from "./cache";
+
+const PLAYER_URL_CACHE_KEY = "resolved_player_url";
+const PLAYER_URL_TTL_MS = 10 * 60 * 1000;
+let inFlightResolve: Promise<string> | null = null;
 
 export async function getPlayerUrl() {
+  const cachedPlayerUrl = cache.get(PLAYER_URL_CACHE_KEY);
+  if (cachedPlayerUrl) {
+    return cachedPlayerUrl;
+  }
+
+  if (inFlightResolve) {
+    return inFlightResolve;
+  }
+
+  inFlightResolve = (async () => {
   let baseUrl = (process.env.BASE_URL || 'https://allmovieland.link/player.js').trim();
 
   console.log(`Base URL: ${baseUrl}`);
@@ -19,7 +34,7 @@ export async function getPlayerUrl() {
           'Referer': 'https://google.com',
           'Origin': 'https://google.com'
         },
-        timeout: 15000 // Increased timeout for Vercel
+        timeout: 8000
       });
       console.log(`Successfully fetched from: ${url}, status: ${res.status}`);
       
@@ -121,5 +136,13 @@ export async function getPlayerUrl() {
   }
 
   console.log(`Final Resolved Player URL: ${playerUrl}`);
+  cache.set(PLAYER_URL_CACHE_KEY, playerUrl, PLAYER_URL_TTL_MS);
   return playerUrl;
+  })();
+
+  try {
+    return await inFlightResolve;
+  } finally {
+    inFlightResolve = null;
+  }
 }

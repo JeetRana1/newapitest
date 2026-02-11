@@ -174,7 +174,7 @@ export default async function proxy(req: Request, res: Response) {
                 httpAgent: useTor ? torAgent : undefined,
                 httpsAgent: useTor ? torAgent : undefined,
                 responseType: isM3U8 ? 'text' : 'stream',
-                timeout: isSegment ? 20000 : 30000, // Segments should be faster
+                timeout: isSegment ? 15000 : 12000,
                 maxRedirects: 5,
                 validateStatus: (status) => status < 400 // Only count 2xx/3xx as success
             });
@@ -196,12 +196,12 @@ export default async function proxy(req: Request, res: Response) {
                     response = await tryFetch(true);
                 }
             } else {
-                // Manifests always try Tor first for privacy
+                // Manifests also try direct first for faster startup, then fallback to Tor.
                 try {
-                    response = await tryFetch(true);
-                } catch (e) {
-                    console.log(`[Proxy Fallback] Tor failed for manifest. Trying direct...`);
                     response = await tryFetch(false);
+                } catch (e) {
+                    console.log(`[Proxy Fallback] Direct failed for manifest. Trying Tor...`);
+                    response = await tryFetch(true);
                 }
             }
         } catch (finalErr: any) {

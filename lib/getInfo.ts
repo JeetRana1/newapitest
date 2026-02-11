@@ -16,12 +16,11 @@ export default async function getInfo(id: string) {
       const targetUrl = `${playerUrl.replace(/\/$/, '')}${path}`;
       console.log(`[getInfo] Trying path: ${targetUrl}`);
 
-      // Try with Tor first for better bypass
       const referers = ["https://allmovieland.link/", "https://google.com/"];
 
       for (const referer of referers) {
         try {
-          const response = await axios.get(targetUrl, {
+          const requestConfig = {
             headers: {
               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
               "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -30,10 +29,20 @@ export default async function getInfo(id: string) {
               "Origin": referer.replace(/\/$/, ''),
               "Cache-Control": "max-age=0"
             },
-            httpAgent: torAgent,
-            httpsAgent: torAgent,
-            timeout: 15000
-          });
+            timeout: 8000
+          };
+
+          let response;
+          try {
+            response = await axios.get(targetUrl, requestConfig);
+          } catch {
+            response = await axios.get(targetUrl, {
+              ...requestConfig,
+              httpAgent: torAgent,
+              httpsAgent: torAgent,
+              timeout: 12000
+            });
+          }
 
           if (response.status === 200) {
             const $ = cheerio.load(response.data);
@@ -52,17 +61,27 @@ export default async function getInfo(id: string) {
 
             const link = file.startsWith("http") ? file : `${playerUrl.endsWith('/') ? playerUrl.slice(0, -1) : playerUrl}${file}`;
 
-            const playlistRes = await axios.get(link, {
+            const playlistConfig = {
               headers: {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
                 "Accept": "*/*",
                 "Referer": targetUrl,
                 "X-Csrf-Token": key
               },
-              httpAgent: torAgent,
-              httpsAgent: torAgent,
-              timeout: 15000
-            });
+              timeout: 8000
+            };
+
+            let playlistRes;
+            try {
+              playlistRes = await axios.get(link, playlistConfig);
+            } catch {
+              playlistRes = await axios.get(link, {
+                ...playlistConfig,
+                httpAgent: torAgent,
+                httpsAgent: torAgent,
+                timeout: 12000
+              });
+            }
 
             const playlist = Array.isArray(playlistRes.data)
               ? playlistRes.data.filter((item: any) => item && (item.file || item.folder))
