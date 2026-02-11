@@ -2,9 +2,12 @@ import axios from "axios";
 import { Request, Response } from "express";
 import { getPlayerUrl } from "../lib/getPlayerUrl";
 import { SocksProxyAgent } from 'socks-proxy-agent';
+import cache from "../lib/cache";
 
 const torProxyUrl = (process.env.TOR_PROXY_URL || "").trim();
 const torAgent = torProxyUrl ? new SocksProxyAgent(torProxyUrl) : null;
+const STREAM_CACHE_TTL_MS = Number(process.env.STREAM_CACHE_TTL_MS || 6 * 60 * 60 * 1000);
+const STREAM_CACHE_STALE_TTL_MS = Number(process.env.STREAM_CACHE_STALE_TTL_MS || 24 * 60 * 60 * 1000);
 
 async function getWithOptionalTor(url: string, config: any) {
   if (!torAgent) {
@@ -27,6 +30,14 @@ async function getWithOptionalTor(url: string, config: any) {
   }
 }
 
+function buildProxiedLink(req: Request, finalStreamUrl: string, proxyRef: string) {
+  const host = req.get('host');
+  const forwardedProto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim();
+  const protocol = forwardedProto || req.protocol || "https";
+  const proxySuffix = proxyRef ? `&proxy_ref=${encodeURIComponent(proxyRef)}` : "";
+  return `${protocol}://${host}/api/v1/proxy?url=${encodeURIComponent(finalStreamUrl)}${proxySuffix}`;
+}
+
 export default async function getStream(req: Request, res: Response) {
   const { file, key } = req.body;
 
@@ -47,6 +58,18 @@ export default async function getStream(req: Request, res: Response) {
       proxyRef = decodeURIComponent(searchParams.get('proxy_ref') || "");
     }
 
+    const streamCacheKey = `stream_resolved_${proxyRef}__${token}__${key}`;
+    const streamCacheStaleKey = `stream_resolved_stale_${proxyRef}__${token}__${key}`;
+
+    const cachedStreamUrl = cache.get(streamCacheKey) as string | null;
+    if (cachedStreamUrl && cachedStreamUrl.startsWith("http")) {
+      const proxiedLink = buildProxiedLink(req, cachedStreamUrl, proxyRef);
+      return res.json({
+        success: true,
+        data: { link: proxiedLink, cached: true },
+      });
+    }
+
     if (token.startsWith('http')) {
       finalStreamUrl = token;
     } else {
@@ -56,28 +79,35 @@ export default async function getStream(req: Request, res: Response) {
       const playlistUrl = `${baseDomain}/playlist/${path}.txt`;
 
       console.log(`[getStream] Mirroring from: ${baseDomain}`);
-      const response = await getWithOptionalTor(playlistUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-          "Referer": baseDomain + "/",
-          "X-Csrf-Token": key
-        },
-        timeout: 15000,
-      });
+      try {
+        const response = await getWithOptionalTor(playlistUrl, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "Referer": baseDomain + "/",
+            "X-Csrf-Token": key
+          },
+          timeout: 15000,
+        });
 
-      finalStreamUrl = response.data;
+        finalStreamUrl = response.data;
+      } catch (err: any) {
+        const staleStreamUrl = cache.get(streamCacheStaleKey) as string | null;
+        if (staleStreamUrl && staleStreamUrl.startsWith("http")) {
+          console.log(`[getStream] Upstream fetch failed, using stale stream cache: ${err.message}`);
+          finalStreamUrl = staleStreamUrl;
+        } else {
+          throw err;
+        }
+      }
     }
 
     if (!finalStreamUrl || typeof finalStreamUrl !== 'string' || !finalStreamUrl.startsWith('http')) {
       return res.status(500).json({ success: false, message: "Invalid stream URL received from mirror" });
     }
 
-    // Wrap in Proxy
-    const host = req.get('host');
-    const forwardedProto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim();
-    const protocol = forwardedProto || req.protocol || "https";
-    const proxySuffix = proxyRef ? `&proxy_ref=${encodeURIComponent(proxyRef)}` : "";
-    const proxiedLink = `${protocol}://${host}/api/v1/proxy?url=${encodeURIComponent(finalStreamUrl)}${proxySuffix}`;
+    cache.set(streamCacheKey, finalStreamUrl, STREAM_CACHE_TTL_MS);
+    cache.set(streamCacheStaleKey, finalStreamUrl, STREAM_CACHE_STALE_TTL_MS);
+    const proxiedLink = buildProxiedLink(req, finalStreamUrl, proxyRef);
 
     res.json({
       success: true,

@@ -41,6 +41,8 @@ PROXY_VIDSRC_REFERER=https://vidsrc.me/
 PROXY_VIDLINK_REFERER=https://vidlink.pro/
 PROXY_SUPEREMBED_REFERER=https://superembed.stream/
 TOR_PROXY_URL=socks5h://127.0.0.1:9050
+STREAM_CACHE_TTL_MS=21600000
+STREAM_CACHE_STALE_TTL_MS=86400000
 ```
 
 4. Build and run the application:
