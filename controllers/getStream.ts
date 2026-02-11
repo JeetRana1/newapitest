@@ -131,6 +131,7 @@ export default async function getStream(req: Request, res: Response) {
     let token = decodeURIComponent(file);
     let proxyRef = "";
     let usedProxyRef = "";
+    const isDirectFallbackKey = String(key).trim().toLowerCase() === "direct";
 
     // Support for proxy_ref hint in token
     if (token.includes('proxy_ref=')) {
@@ -201,35 +202,49 @@ export default async function getStream(req: Request, res: Response) {
       if (!finalStreamUrl) {
         // Some providers no longer return direct playlist URLs from /playlist/*.txt.
         // In that case, probe tokenized /stream variants and proxy the first reachable URL.
-        const fallbackBase = proxyRef || primaryBase || lastBaseTried;
-        const fallbackReferers = buildRefererCandidates(fallbackBase);
-        const streamCandidates = buildUpstreamTokenStreamCandidates(fallbackBase, token);
+        const streamBases = Array.from(
+          new Set([proxyRef || "", ...baseCandidates, primaryBase, lastBaseTried].filter(Boolean))
+        );
 
-        for (const streamUrl of streamCandidates) {
-          for (const referer of fallbackReferers) {
-            try {
-              const response = await getWithOptionalTor(streamUrl, {
-                headers: {
-                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                  "Referer": referer,
-                  "Origin": referer.replace(/\/$/, ""),
-                  "Accept": "*/*",
-                  "X-Csrf-Token": key,
-                },
-                timeout: 12000,
-              });
+        for (const streamBase of streamBases) {
+          const fallbackReferers = buildRefererCandidates(streamBase);
+          const streamCandidates = buildUpstreamTokenStreamCandidates(streamBase, token);
+          for (const streamUrl of streamCandidates) {
+            for (const referer of fallbackReferers) {
+              try {
+                const response = await getWithOptionalTor(streamUrl, {
+                  headers: {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                    "Referer": referer,
+                    "Origin": referer.replace(/\/$/, ""),
+                    "Accept": "*/*",
+                    ...(isDirectFallbackKey ? {} : { "X-Csrf-Token": key }),
+                  },
+                  timeout: 12000,
+                });
 
-              if (response.status >= 200 && response.status < 400) {
-                finalStreamUrl = streamUrl;
-                usedProxyRef = fallbackBase;
-                break;
+                if (response.status >= 200 && response.status < 400) {
+                  finalStreamUrl = streamUrl;
+                  usedProxyRef = streamBase;
+                  break;
+                }
+              } catch (err: any) {
+                lastErr = err;
+                console.log(`[getStream] Failed stream probe ${streamUrl} with referer ${referer}: ${err.message}`);
               }
-            } catch (err: any) {
-              lastErr = err;
-              console.log(`[getStream] Failed stream probe ${streamUrl} with referer ${referer}: ${err.message}`);
             }
+            if (finalStreamUrl) break;
           }
           if (finalStreamUrl) break;
+        }
+
+        // Token fallback mode: return a proxyable stream URL even if probe checks fail.
+        // The proxy endpoint can still recover by switching origins at request time.
+        if (!finalStreamUrl && isDirectFallbackKey) {
+          const passthroughBase = (proxyRef || primaryBase || lastBaseTried).replace(/\/$/, "");
+          finalStreamUrl = buildUpstreamTokenStreamUrl(passthroughBase, token);
+          usedProxyRef = passthroughBase;
+          console.log(`[getStream] Using direct token passthrough URL: ${finalStreamUrl}`);
         }
 
         const staleStreamUrl = cache.get(streamCacheStaleKey) as string | null;
