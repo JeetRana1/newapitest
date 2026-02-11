@@ -61,11 +61,26 @@ function buildCandidateBases(primaryBase: string): string[] {
 }
 
 function normalizeUpstreamStreamUrl(baseDomain: string, raw: any): string {
-  const text = typeof raw === "string" ? raw.trim() : String(raw ?? "").trim();
+  let candidate: any = raw;
+  if (candidate && typeof candidate === "object") {
+    candidate =
+      candidate.file ??
+      candidate.url ??
+      candidate.src ??
+      candidate.link ??
+      candidate.data ??
+      "";
+  }
+  const text = typeof candidate === "string" ? candidate.trim() : String(candidate ?? "").trim();
   if (!text) return "";
   if (text.startsWith("http")) return text;
   if (text.startsWith("/")) return new URL(text, `${baseDomain}/`).toString();
   return "";
+}
+
+function buildUpstreamTokenStreamUrl(baseDomain: string, token: string): string {
+  const encodedToken = encodeURIComponent(token);
+  return `${baseDomain.replace(/\/$/, "")}/stream/${encodedToken}`;
 }
 
 export default async function getStream(req: Request, res: Response) {
@@ -106,13 +121,17 @@ export default async function getStream(req: Request, res: Response) {
     } else {
       const primaryBase = (proxyRef && proxyRef !== '' ? proxyRef : await getPlayerUrl()).replace(/\/$/, '');
       const baseCandidates = buildCandidateBases(primaryBase);
-      const rawPath = token.startsWith('~') ? token.slice(1) : token;
-      const pathCandidates = Array.from(new Set([rawPath, encodeURIComponent(rawPath)]));
+      const tokenWithoutTilde = token.startsWith('~') ? token.slice(1) : token;
+      const playlistPathCandidates = Array.from(
+        new Set([tokenWithoutTilde, token, encodeURIComponent(tokenWithoutTilde), encodeURIComponent(token)])
+      );
       let lastErr: any = null;
+      let lastBaseTried = primaryBase;
 
       for (const baseDomain of baseCandidates) {
+        lastBaseTried = baseDomain;
         console.log(`[getStream] Mirroring from: ${baseDomain}`);
-        for (const path of pathCandidates) {
+        for (const path of playlistPathCandidates) {
           const playlistUrl = `${baseDomain}/playlist/${path}.txt`;
           try {
             const response = await getWithOptionalTor(playlistUrl, {
@@ -140,15 +159,16 @@ export default async function getStream(req: Request, res: Response) {
       }
 
       if (!finalStreamUrl) {
+        // Some providers no longer return direct playlist URLs from /playlist/*.txt.
+        // In that case, proxy the tokenized /stream path directly and let proxy rewrite HLS.
+        finalStreamUrl = buildUpstreamTokenStreamUrl(lastBaseTried, token);
+        usedProxyRef = usedProxyRef || lastBaseTried;
+
         const staleStreamUrl = cache.get(streamCacheStaleKey) as string | null;
         if (staleStreamUrl && staleStreamUrl.startsWith("http")) {
           console.log(`[getStream] Upstream fetch failed, using stale stream cache: ${lastErr?.message || "unknown error"}`);
           finalStreamUrl = staleStreamUrl;
           usedProxyRef = proxyRef;
-        } else if (lastErr) {
-          throw lastErr;
-        } else {
-          throw new Error("Unable to resolve playlist URL from any known player base");
         }
       }
     }
