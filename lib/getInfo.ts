@@ -6,6 +6,30 @@ import { SocksProxyAgent } from "socks-proxy-agent";
 const torProxyUrl = (process.env.TOR_PROXY_URL || "").trim();
 const torAgent = torProxyUrl ? new SocksProxyAgent(torProxyUrl) : null;
 
+function isExpectedMissError(err: any): boolean {
+  const status = Number(err?.response?.status || 0);
+  const code = String(err?.code || "");
+  return status === 404 || ["ENOTFOUND", "EAI_AGAIN"].includes(code);
+}
+
+function extractFileAndKeyFromHtml(html: string): { file: string; key: string } | null {
+  const $ = cheerio.load(html);
+  const scripts = $("script")
+    .map((_, el) => $(el).html() || "")
+    .get()
+    .filter(Boolean);
+
+  for (const script of scripts) {
+    const fileMatch = script.match(/["']file["']\s*:\s*["']([^"']+)["']/);
+    const keyMatch = script.match(/["']key["']\s*:\s*["']([^"']+)["']/);
+    if (fileMatch?.[1] && keyMatch?.[1]) {
+      return { file: fileMatch[1], key: keyMatch[1] };
+    }
+  }
+
+  return null;
+}
+
 function shouldFallbackDirect(err: any): boolean {
   const message = String(err?.message || "");
   const code = String(err?.code || "");
@@ -112,6 +136,7 @@ export default async function getInfo(id: string) {
       .filter(Boolean);
 
     let lastError: any = null;
+    let hadHttpResponse = false;
     let lastTargetUrl = "";
 
     for (const base of candidateBases) {
@@ -137,22 +162,14 @@ export default async function getInfo(id: string) {
             });
 
             if (response.status !== 200) continue;
+            hadHttpResponse = true;
 
-            const $ = cheerio.load(response.data);
-            const script = $("script").last().html();
-            if (!script) continue;
+            const extracted = extractFileAndKeyFromHtml(response.data);
+            if (!extracted?.file || !extracted?.key) continue;
 
-            const contentMatch = script.match(/(\{[^;]+});/) || script.match(/\((\{.*\})\)/);
-            if (!contentMatch || !contentMatch[1]) continue;
-
-            const data = JSON.parse(contentMatch[1]);
-            const file = data["file"];
-            const key = data["key"];
-            if (!file) continue;
-
-            const link = file.startsWith("http")
-              ? file
-              : new URL(file, `${base}/`).toString();
+            const link = extracted.file.startsWith("http")
+              ? extracted.file
+              : new URL(extracted.file, `${base}/`).toString();
 
             const playlistRes = await getWithOptionalTor(link, {
               headers: {
@@ -160,7 +177,7 @@ export default async function getInfo(id: string) {
                   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
                 "Accept": "*/*",
                 "Referer": targetUrl,
-                "X-Csrf-Token": key,
+                "X-Csrf-Token": extracted.key,
               },
               timeout: 15000,
             });
@@ -175,13 +192,15 @@ export default async function getInfo(id: string) {
                 success: true,
                 data: {
                   playlist: playlistWithRef,
-                  key,
+                  key: extracted.key,
                 },
               };
             }
           } catch (e: any) {
             console.log(`[getInfo] Failed path ${targetUrl} with referer ${referer}: ${e.message}`);
-            lastError = e;
+            if (!isExpectedMissError(e)) {
+              lastError = e;
+            }
           }
         }
       }
@@ -191,7 +210,9 @@ export default async function getInfo(id: string) {
       success: false,
       message: lastError
         ? `API Error: ${lastError.message}${lastTargetUrl ? ` (last tried: ${lastTargetUrl})` : ""}`
-        : "Media not found on any known paths",
+        : hadHttpResponse
+          ? "Media page loaded but no playable source found on known paths"
+          : "Media not found on any known paths",
     };
   } catch (error: any) {
     console.error("Error in getInfo:", error.message);
