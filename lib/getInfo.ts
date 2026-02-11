@@ -5,11 +5,20 @@ import { SocksProxyAgent } from "socks-proxy-agent";
 
 const torProxyUrl = (process.env.TOR_PROXY_URL || "").trim();
 const torAgent = torProxyUrl ? new SocksProxyAgent(torProxyUrl) : null;
+const INFO_REQUEST_TIMEOUT_MS = Math.max(3000, Number(process.env.INFO_REQUEST_TIMEOUT_MS || 8000));
+const INFO_PLAYLIST_TIMEOUT_MS = Math.max(3000, Number(process.env.INFO_PLAYLIST_TIMEOUT_MS || 10000));
+const INFO_MAX_BASES = Math.max(1, Number(process.env.INFO_MAX_BASES || 4));
 
 function isExpectedMissError(err: any): boolean {
   const status = Number(err?.response?.status || 0);
   const code = String(err?.code || "");
   return status === 404 || ["ENOTFOUND", "EAI_AGAIN"].includes(code);
+}
+
+function isTimeoutError(err: any): boolean {
+  const message = String(err?.message || "");
+  const code = String(err?.code || "");
+  return message.includes("timeout") || ["ETIMEDOUT", "ECONNABORTED"].includes(code);
 }
 
 function extractFileAndKeyFromHtml(html: string): { file: string; key: string } | null {
@@ -20,8 +29,8 @@ function extractFileAndKeyFromHtml(html: string): { file: string; key: string } 
     .filter(Boolean);
 
   for (const script of scripts) {
-    const fileMatch = script.match(/["']file["']\s*:\s*["']([^"']+)["']/);
-    const keyMatch = script.match(/["']key["']\s*:\s*["']([^"']+)["']/);
+    const fileMatch = script.match(/["']?file["']?\s*:\s*["']([^"']+)["']/);
+    const keyMatch = script.match(/["']?key["']?\s*:\s*["']([^"']+)["']/);
     if (fileMatch?.[1] && keyMatch?.[1]) {
       return { file: fileMatch[1], key: keyMatch[1] };
     }
@@ -78,11 +87,11 @@ function buildCandidatePlayerBases(primaryBase: string): string[] {
   })();
   const cleanedPrimary = primaryBase.replace(/\/$/, "");
   const fromEnv = [
+    ...fromPlayerOrigins,
     ...(process.env.INFO_PLAYER_FALLBACKS || "")
       .split(",")
       .map((v) => v.trim())
       .filter(Boolean),
-    ...fromPlayerOrigins,
     baseUrlOrigin,
     (process.env.PLAYER_HARDCODED_FALLBACK || "").trim(),
   ]
@@ -121,7 +130,7 @@ function attachProxyRefToPlaylist(items: any[], base: string): any[] {
 export default async function getInfo(id: string) {
   try {
     const playerUrl = await getPlayerUrl();
-    const candidateBases = buildCandidatePlayerBases(playerUrl);
+    const candidateBases = buildCandidatePlayerBases(playerUrl).slice(0, INFO_MAX_BASES);
     const paths = [
       `/play/${id}`,
       `/play/${id}?tr=1`,
@@ -129,6 +138,8 @@ export default async function getInfo(id: string) {
       `/watch/${id}`,
       `/embed/${id}`,
       `/e/${id}`,
+      `/movie/${id}`,
+      `/title/${id}`,
     ];
     const referers = (process.env.INFO_REFERERS || "https://allmovieland.link/,https://google.com/")
       .split(",")
@@ -141,7 +152,9 @@ export default async function getInfo(id: string) {
 
     for (const base of candidateBases) {
       console.log(`[getInfo] Trying player base: ${base}`);
+      let skipRemainingBasePaths = false;
       for (const path of paths) {
+        if (skipRemainingBasePaths) break;
         const targetUrl = `${base}${path}`;
         lastTargetUrl = targetUrl;
         console.log(`[getInfo] Trying path: ${targetUrl}`);
@@ -158,7 +171,7 @@ export default async function getInfo(id: string) {
                 "Origin": referer.replace(/\/$/, ""),
                 "Cache-Control": "max-age=0",
               },
-              timeout: 15000,
+              timeout: INFO_REQUEST_TIMEOUT_MS,
             });
 
             if (response.status !== 200) continue;
@@ -179,7 +192,7 @@ export default async function getInfo(id: string) {
                 "Referer": targetUrl,
                 "X-Csrf-Token": extracted.key,
               },
-              timeout: 15000,
+              timeout: INFO_PLAYLIST_TIMEOUT_MS,
             });
 
             const playlist = Array.isArray(playlistRes.data)
@@ -198,9 +211,14 @@ export default async function getInfo(id: string) {
             }
           } catch (e: any) {
             console.log(`[getInfo] Failed path ${targetUrl} with referer ${referer}: ${e.message}`);
+            if (isTimeoutError(e)) {
+              // If a base is timing out, skip the rest of its paths to prevent very long API latency.
+              skipRemainingBasePaths = true;
+            }
             if (!isExpectedMissError(e)) {
               lastError = e;
             }
+            if (skipRemainingBasePaths) break;
           }
         }
       }
