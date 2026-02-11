@@ -11,6 +11,45 @@ const proxyVidsrcReferer = (process.env.PROXY_VIDSRC_REFERER || "").trim();
 const proxyVidlinkReferer = (process.env.PROXY_VIDLINK_REFERER || "").trim();
 const proxySuperembedReferer = (process.env.PROXY_SUPEREMBED_REFERER || "").trim();
 
+function getOriginSafe(raw: string): string | null {
+    try {
+        return new URL(raw).origin;
+    } catch {
+        return null;
+    }
+}
+
+async function buildProxyTargetCandidates(targetUrl: string, proxyRef?: string): Promise<string[]> {
+    const parsed = new URL(targetUrl);
+    const looksTokenizedPath = parsed.pathname.startsWith('/stream/') || parsed.pathname.startsWith('/playlist/');
+    if (!looksTokenizedPath) return [targetUrl];
+
+    const envFallbacks = [
+        ...(process.env.INFO_PLAYER_FALLBACKS || "")
+            .split(",")
+            .map((v) => v.trim())
+            .filter(Boolean),
+        (process.env.PLAYER_HARDCODED_FALLBACK || "").trim(),
+    ];
+
+    let resolvedOrigin = "";
+    try {
+        resolvedOrigin = getOriginSafe(await getPlayerUrl()) || "";
+    } catch {
+        resolvedOrigin = "";
+    }
+
+    const originCandidates = [
+        parsed.origin,
+        proxyRef ? getOriginSafe(proxyRef) || "" : "",
+        resolvedOrigin,
+        ...envFallbacks.map((v) => getOriginSafe(v) || ""),
+    ].filter(Boolean);
+
+    const uniqueOrigins = Array.from(new Set(originCandidates));
+    return uniqueOrigins.map((origin) => `${origin}${parsed.pathname}${parsed.search}`);
+}
+
 /**
  * Proxy controller optimized for stability and reliability.
  * Reverted to pure-Tor for data integrity while keeping HLS rewriting.
@@ -198,10 +237,10 @@ export default async function proxy(req: Request, res: Response) {
             };
         };
 
-        const tryFetch = async (useTor: boolean) => {
+        const tryFetch = async (url: string, useTor: boolean) => {
             const shouldUseTor = useTor && !!torAgent;
-            return await axios.get(targetUrl, {
-                headers: getProxyHeaders(targetUrl),
+            return await axios.get(url, {
+                headers: getProxyHeaders(url),
                 httpAgent: shouldUseTor ? torAgent || undefined : undefined,
                 httpsAgent: shouldUseTor ? torAgent || undefined : undefined,
                 responseType: isM3U8 ? 'text' : 'stream',
@@ -212,32 +251,44 @@ export default async function proxy(req: Request, res: Response) {
         };
 
         let response;
-        try {
-            // Priority for segments: Try Direct FIRST for speed, then Tor Fallback
-            // But if we detect a 403 (Block), we fail-fast to Tor to save time
-            if (isSegment) {
-                try {
-                    // Try Direct First
-                    response = await tryFetch(false);
-                } catch (e: any) {
-                    // If blocked (403), immediately switch to Tor
-                    if (e.message.includes('403') || e.message.includes('401')) {
-                        console.log(`[Proxy Adaptive] Direct blocked (${e.message}). Switching to Tor lane...`);
+        const targetCandidates = await buildProxyTargetCandidates(targetUrl, proxyRef);
+        let activeTargetUrl = targetUrl;
+
+        for (const candidateUrl of targetCandidates) {
+            try {
+                // Priority for segments: Try Direct FIRST for speed, then Tor Fallback
+                // But if we detect a 403 (Block), we fail-fast to Tor to save time
+                if (isSegment) {
+                    try {
+                        response = await tryFetch(candidateUrl, false);
+                    } catch (e: any) {
+                        if (e.message.includes('403') || e.message.includes('401')) {
+                            console.log(`[Proxy Adaptive] Direct blocked (${e.message}). Switching to Tor lane...`);
+                        }
+                        response = await tryFetch(candidateUrl, true);
                     }
-                    response = await tryFetch(true);
+                } else {
+                    try {
+                        response = await tryFetch(candidateUrl, true);
+                    } catch (e) {
+                        console.log(`[Proxy Fallback] Tor failed for manifest. Trying direct...`);
+                        response = await tryFetch(candidateUrl, false);
+                    }
                 }
-            } else {
-                // Manifests always try Tor first for privacy
-                try {
-                    response = await tryFetch(true);
-                } catch (e) {
-                    console.log(`[Proxy Fallback] Tor failed for manifest. Trying direct...`);
-                    response = await tryFetch(false);
+                activeTargetUrl = candidateUrl;
+                if (candidateUrl !== targetUrl) {
+                    console.log(`[Proxy Recover] Switched origin: ${targetUrl} -> ${candidateUrl}`);
                 }
+                break;
+            } catch (candidateErr: any) {
+                console.log(`[Proxy Retry] Failed candidate ${candidateUrl}: ${candidateErr.message}`);
             }
-        } catch (finalErr: any) {
-            throw finalErr;
         }
+
+        if (!response) {
+            throw new Error(`All proxy candidates failed for ${targetUrl}`);
+        }
+        targetUrl = activeTargetUrl;
 
         // Set permissive CORS
         res.setHeader("Access-Control-Allow-Origin", "*");
