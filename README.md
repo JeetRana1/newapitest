@@ -35,6 +35,7 @@ PLAYER_FALLBACK_URLS=https://allmovieland.link/player.js,https://allmovieland.io
 PLAYER_HARDCODED_FALLBACK=https://vekna402las.com
 PLAYER_ORIGINS=https://allmovieland.link,https://allmovieland.io,https://allmovieland.net,https://allmovieland.tv
 INFO_REFERERS=https://allmovieland.link/,https://google.com/
+INFO_PLAYER_FALLBACKS=https://vekna402las.com,https://heast404jax.com
 PROXY_DEFAULT_REFERER=https://allmovieland.link/
 PROXY_SLIME_REFERER=https://vekna402las.com/
 PROXY_VIDSRC_REFERER=https://vidsrc.me/
