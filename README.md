@@ -8,7 +8,7 @@ A robust streaming API that fetches and proxies video content from various sourc
 - **TMDB Integration**: Automatic conversion of TMDB IDs to IMDB IDs using the official TMDB API
 - **Caching System**: In-memory caching for faster response times and reduced load on external sources
 - **Proxy Support**: Built-in proxy with Tor support for accessing restricted content
-- **HLS Support**: Full support for HLS streaming with manifest rewriting
+- **HLS Support**: Full support for HLS streaming with manifest rewritingc
 
 ## Setup
 
