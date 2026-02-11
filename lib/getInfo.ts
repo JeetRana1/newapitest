@@ -6,6 +6,28 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 const torProxyUrl = (process.env.TOR_PROXY_URL || "socks5h://127.0.0.1:9050").trim();
 const torAgent = torProxyUrl ? new SocksProxyAgent(torProxyUrl) : null;
 
+function shouldFallbackDirect(err: any): boolean {
+  const message = String(err?.message || "");
+  const code = String(err?.code || "");
+  const status = err?.response?.status as number | undefined;
+
+  if (message.includes("127.0.0.1:9050")) return true;
+  if (message.includes("Socks5 proxy rejected connection")) return true;
+  if (message.includes("HostUnreachable")) return true;
+
+  if (
+    ["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ECONNABORTED", "EAI_AGAIN", "ENOTFOUND"].includes(code)
+  ) {
+    return true;
+  }
+
+  if (status && [403, 404, 429, 500, 502, 503, 504].includes(status)) {
+    return true;
+  }
+
+  return false;
+}
+
 async function getWithOptionalTor(url: string, config: any) {
   if (!torAgent) {
     return axios.get(url, config);
@@ -18,9 +40,8 @@ async function getWithOptionalTor(url: string, config: any) {
       httpsAgent: torAgent,
     });
   } catch (err: any) {
-    const message = String(err?.message || "");
-    if (err?.code === "ECONNREFUSED" || message.includes("127.0.0.1:9050")) {
-      console.log("[getInfo] Tor unavailable. Falling back to direct request.");
+    if (shouldFallbackDirect(err)) {
+      console.log(`[getInfo] Tor lane failed (${err?.message || err}). Falling back to direct request.`);
       return axios.get(url, config);
     }
     throw err;
