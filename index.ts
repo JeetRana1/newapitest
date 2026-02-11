@@ -6,6 +6,7 @@ import rateLimit from "express-rate-limit";
 import cache from "./lib/cache";
 
 const app = express();
+app.set("trust proxy", true);
 
 app.use(
   cors({

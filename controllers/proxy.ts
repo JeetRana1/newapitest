@@ -12,7 +12,8 @@ const torAgent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
 export default async function proxy(req: Request, res: Response) {
     let targetUrl = req.query.url as string;
     const host = req.get('host') || "";
-    const protocol = req.protocol;
+    const forwardedProto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim();
+    const protocol = forwardedProto || req.protocol || "https";
     const proxyBase = `${protocol}://${host}/api/v1/proxy?url=`;
 
     // 0. Safety Valve: Smart Passthrough for Fragile Audio Providers (via Tor)
