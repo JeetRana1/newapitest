@@ -16,9 +16,9 @@ RUN echo "#!/bin/sh" > /app/start.sh && \
     echo "npm start" >> /app/start.sh && \
     chmod +x /app/start.sh
 
-# Open port 7860 for Hugging Face
-ENV PORT=7860
-EXPOSE 7860
+# Open port 8000 for Koyeb health checks
+ENV PORT=8000
+EXPOSE 8000
 
 # Start everything
 CMD ["/app/start.sh"]
