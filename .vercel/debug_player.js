@@ -1,4 +1,4 @@
-const AwsIndStreamDomain = (IndStreamPlayerConfigs.domain || '').replace(/\/$/, '');
+const AwsIndStreamDomain 			= 'https://vekna402las.com/';
 
 (function() {
 
