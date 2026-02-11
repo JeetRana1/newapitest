@@ -54,8 +54,10 @@ export default async function getStream(req: Request, res: Response) {
 
     // Wrap in Proxy
     const host = req.get('host');
+    const forwardedProto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim();
+    const protocol = forwardedProto || req.protocol || "https";
     const proxySuffix = proxyRef ? `&proxy_ref=${encodeURIComponent(proxyRef)}` : "";
-    const proxiedLink = `https://${host}/api/v1/proxy?url=${encodeURIComponent(finalStreamUrl)}${proxySuffix}`;
+    const proxiedLink = `${protocol}://${host}/api/v1/proxy?url=${encodeURIComponent(finalStreamUrl)}${proxySuffix}`;
 
     res.json({
       success: true,
