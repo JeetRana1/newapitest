@@ -29,92 +29,103 @@ async function getWithOptionalTor(url: string, config: any) {
 
 export default async function getInfo(id: string) {
   try {
-    const playerUrl = await getPlayerUrl();
+    const primaryPlayerUrl = await getPlayerUrl();
+    const playerUrlCandidates = [
+      primaryPlayerUrl,
+      ...(process.env.PLAYER_ORIGINS || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ].filter((value, index, arr) => arr.indexOf(value) === index);
+
     const paths = [`/play/${id}`, `/v/${id}`, `/watch/${id}`];
-    const playerOrigin = (() => {
-      try {
-        return new URL(playerUrl).origin;
-      } catch {
-        return "";
-      }
-    })();
-    const defaultReferer = playerOrigin ? `${playerOrigin}/` : "";
-    const referers = (process.env.INFO_REFERERS || defaultReferer)
+    const defaultReferers = playerUrlCandidates
+      .map((value) => {
+        try {
+          return `${new URL(value).origin}/`;
+        } catch {
+          return "";
+        }
+      })
+      .filter(Boolean);
+    const referers = (process.env.INFO_REFERERS || defaultReferers.join(","))
       .split(",")
       .map((item) => item.trim())
       .filter(Boolean);
 
     let lastError: any = null;
 
-    for (const path of paths) {
-      const targetUrl = `${playerUrl.replace(/\/$/, '')}${path}`;
-      console.log(`[getInfo] Trying path: ${targetUrl}`);
+    for (const playerUrl of playerUrlCandidates) {
+      for (const path of paths) {
+        const targetUrl = `${playerUrl.replace(/\/$/, '')}${path}`;
+        console.log(`[getInfo] Trying path: ${targetUrl}`);
 
-      // Try with Tor first for better bypass
-      if (referers.length === 0) {
-        throw new Error("INFO_REFERERS is not configured and player origin could not be derived");
-      }
+        // Try with Tor first for better bypass
+        if (referers.length === 0) {
+          throw new Error("INFO_REFERERS is not configured and player origin could not be derived");
+        }
 
-      for (const referer of referers) {
-        try {
-          const response = await getWithOptionalTor(targetUrl, {
-            headers: {
-              "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-              "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-              "Accept-Language": "en-US,en;q=0.9",
-              "Referer": referer,
-              "Origin": referer.replace(/\/$/, ''),
-              "Cache-Control": "max-age=0"
-            },
-            timeout: 15000
-          });
-
-          if (response.status === 200) {
-            const $ = cheerio.load(response.data);
-            const script = $("script").last().html();
-
-            if (!script) continue;
-
-            const contentMatch = script.match(/(\{[^;]+});/) || script.match(/\((\{.*\})\)/);
-            if (!contentMatch || !contentMatch[1]) continue;
-
-            const data = JSON.parse(contentMatch[1]);
-            const file = data["file"];
-            const key = data["key"];
-
-            if (!file) continue;
-
-            const link = file.startsWith("http")
-              ? file
-              : new URL(file, `${playerUrl.replace(/\/$/, "")}/`).toString();
-
-            const playlistRes = await getWithOptionalTor(link, {
+        for (const referer of referers) {
+          try {
+            const response = await getWithOptionalTor(targetUrl, {
               headers: {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Accept": "*/*",
-                "Referer": targetUrl,
-                "X-Csrf-Token": key
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": referer,
+                "Origin": referer.replace(/\/$/, ''),
+                "Cache-Control": "max-age=0"
               },
               timeout: 15000
             });
 
-            const playlist = Array.isArray(playlistRes.data)
-              ? playlistRes.data.filter((item: any) => item && (item.file || item.folder))
-              : [];
+            if (response.status === 200) {
+              const $ = cheerio.load(response.data);
+              const script = $("script").last().html();
 
-            if (playlist.length > 0) {
-              return {
-                success: true,
-                data: {
-                  playlist,
-                  key,
+              if (!script) continue;
+
+              const contentMatch = script.match(/(\{[^;]+});/) || script.match(/\((\{.*\})\)/);
+              if (!contentMatch || !contentMatch[1]) continue;
+
+              const data = JSON.parse(contentMatch[1]);
+              const file = data["file"];
+              const key = data["key"];
+
+              if (!file) continue;
+
+              const link = file.startsWith("http")
+                ? file
+                : new URL(file, `${playerUrl.replace(/\/$/, "")}/`).toString();
+
+              const playlistRes = await getWithOptionalTor(link, {
+                headers: {
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                  "Accept": "*/*",
+                  "Referer": targetUrl,
+                  "X-Csrf-Token": key
                 },
-              };
+                timeout: 15000
+              });
+
+              const playlist = Array.isArray(playlistRes.data)
+                ? playlistRes.data.filter((item: any) => item && (item.file || item.folder))
+                : [];
+
+              if (playlist.length > 0) {
+                return {
+                  success: true,
+                  data: {
+                    playlist,
+                    key,
+                  },
+                };
+              }
             }
+          } catch (e: any) {
+            console.log(`[getInfo] Failed path ${targetUrl} with referer ${referer}: ${e.message}`);
+            lastError = e;
           }
-        } catch (e: any) {
-          console.log(`[getInfo] Failed path ${targetUrl} with referer ${referer}: ${e.message}`);
-          lastError = e;
         }
       }
     }
