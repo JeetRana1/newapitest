@@ -3,7 +3,7 @@ import * as cheerio from "cheerio";
 import { getPlayerUrl } from "./getPlayerUrl";
 import { SocksProxyAgent } from 'socks-proxy-agent';
 
-const torProxyUrl = (process.env.TOR_PROXY_URL || "").trim();
+const torProxyUrl = (process.env.TOR_PROXY_URL || "socks5h://127.0.0.1:9050").trim();
 const torAgent = torProxyUrl ? new SocksProxyAgent(torProxyUrl) : null;
 
 async function getWithOptionalTor(url: string, config: any) {
@@ -27,6 +27,33 @@ async function getWithOptionalTor(url: string, config: any) {
   }
 }
 
+function extractFileAndKeyFromHtml(html: string): { file: string; key?: string } | null {
+  const $ = cheerio.load(html);
+  const scripts = $("script")
+    .map((_, el) => $(el).html() || "")
+    .get()
+    .filter(Boolean);
+
+  const sources = [...scripts, html];
+  for (const source of sources) {
+    const fileMatch =
+      source.match(/["']file["']\s*:\s*["']([^"']+)["']/) ||
+      source.match(/\bfile\s*:\s*["']([^"']+)["']/);
+    if (!fileMatch?.[1]) continue;
+
+    const keyMatch =
+      source.match(/["']key["']\s*:\s*["']([^"']+)["']/) ||
+      source.match(/\bkey\s*:\s*["']([^"']+)["']/);
+
+    return {
+      file: fileMatch[1],
+      key: keyMatch?.[1],
+    };
+  }
+
+  return null;
+}
+
 export default async function getInfo(id: string) {
   try {
     const primaryPlayerUrl = await getPlayerUrl();
@@ -48,10 +75,12 @@ export default async function getInfo(id: string) {
         }
       })
       .filter(Boolean);
-    const referers = (process.env.INFO_REFERERS || defaultReferers.join(","))
+    const envReferers = (process.env.INFO_REFERERS || "")
       .split(",")
       .map((item) => item.trim())
       .filter(Boolean);
+    const referers = [...defaultReferers, ...envReferers]
+      .filter((value, index, arr) => arr.indexOf(value) === index);
 
     let lastError: any = null;
 
@@ -80,17 +109,14 @@ export default async function getInfo(id: string) {
             });
 
             if (response.status === 200) {
-              const $ = cheerio.load(response.data);
-              const script = $("script").last().html();
-
-              if (!script) continue;
-
-              const contentMatch = script.match(/(\{[^;]+});/) || script.match(/\((\{.*\})\)/);
-              if (!contentMatch || !contentMatch[1]) continue;
-
-              const data = JSON.parse(contentMatch[1]);
-              const file = data["file"];
-              const key = data["key"];
+              const html = typeof response.data === "string" ? response.data : String(response.data || "");
+              const payload = extractFileAndKeyFromHtml(html);
+              if (!payload?.file) {
+                console.log(`[getInfo] No file/key payload found on ${targetUrl}`);
+                continue;
+              }
+              const file = payload.file;
+              const key = payload.key;
 
               if (!file) continue;
 
@@ -103,7 +129,7 @@ export default async function getInfo(id: string) {
                   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
                   "Accept": "*/*",
                   "Referer": targetUrl,
-                  "X-Csrf-Token": key
+                  ...(key ? { "X-Csrf-Token": key } : {})
                 },
                 timeout: 15000
               });
