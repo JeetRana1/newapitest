@@ -84,7 +84,9 @@ export default async function getInfo(id: string) {
 
             if (!file) continue;
 
-            const link = file.startsWith("http") ? file : `${playerUrl.endsWith('/') ? playerUrl.slice(0, -1) : playerUrl}${file}`;
+            const link = file.startsWith("http")
+              ? file
+              : new URL(file, `${playerUrl.replace(/\/$/, "")}/`).toString();
 
             const playlistRes = await getWithOptionalTor(link, {
               headers: {

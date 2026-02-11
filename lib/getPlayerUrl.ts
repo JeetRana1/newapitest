@@ -27,6 +27,24 @@ export async function getPlayerUrl() {
 }
 
 async function resolvePlayerUrl() {
+  const normalizePlayerBase = (rawUrl: string) => {
+    const trimmed = rawUrl.trim();
+    try {
+      const parsed = new URL(trimmed);
+      // If we accidentally extract a JS/page URL, use only the site origin.
+      if (
+        parsed.pathname.endsWith(".js") ||
+        parsed.pathname.endsWith(".html") ||
+        parsed.pathname.includes("/player")
+      ) {
+        return parsed.origin;
+      }
+      return `${parsed.origin}${parsed.pathname}`.replace(/\/$/, "");
+    } catch {
+      return trimmed.replace(/\/$/, "");
+    }
+  };
+
   let baseUrl = (process.env.BASE_URL || "").trim();
   if (!baseUrl) {
     throw new Error("BASE_URL is not configured");
@@ -97,12 +115,12 @@ async function resolvePlayerUrl() {
           console.log(`Found player domain with pattern: ${pattern.toString()} - ${domain} from URL: ${url}`);
           // Validate domain format and ensure it's not a known dead one
           if (domain.startsWith("http") && !domain.includes("protection-episode-i-222.site")) {
-            return domain.endsWith("/") ? domain.slice(0, -1) : domain;
+            return normalizePlayerBase(domain);
           } else if (!domain.startsWith("http")) {
             // If it doesn't start with http, prepend https
             const fullDomain = `https://${domain}`;
             if (!fullDomain.includes("protection-episode-i-222.site")) {
-              return fullDomain.endsWith("/") ? fullDomain.slice(0, -1) : fullDomain;
+              return normalizePlayerBase(fullDomain);
             }
           }
         }
@@ -130,7 +148,7 @@ async function resolvePlayerUrl() {
   if (!playerUrl) {
     const envFallback = (process.env.PLAYER_HARDCODED_FALLBACK || "").trim();
     if (envFallback) {
-      playerUrl = envFallback.endsWith("/") ? envFallback.slice(0, -1) : envFallback;
+      playerUrl = normalizePlayerBase(envFallback);
       console.log("Using env fallback URL");
     }
   }
