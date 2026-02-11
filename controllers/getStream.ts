@@ -60,6 +60,15 @@ function buildCandidateBases(primaryBase: string): string[] {
   return out;
 }
 
+function buildRefererCandidates(baseDomain: string): string[] {
+  const fromEnv = (process.env.INFO_REFERERS || "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+  const defaults = [`${baseDomain.replace(/\/$/, "")}/`, "https://allmovieland.link/"];
+  return Array.from(new Set([...fromEnv, ...defaults]));
+}
+
 function normalizeUpstreamStreamUrl(baseDomain: string, raw: any): string {
   let candidate: any = raw;
   if (candidate && typeof candidate === "object") {
@@ -81,6 +90,17 @@ function normalizeUpstreamStreamUrl(baseDomain: string, raw: any): string {
 function buildUpstreamTokenStreamUrl(baseDomain: string, token: string): string {
   const encodedToken = encodeURIComponent(token);
   return `${baseDomain.replace(/\/$/, "")}/stream/${encodedToken}`;
+}
+
+function buildUpstreamTokenStreamCandidates(baseDomain: string, token: string): string[] {
+  const noTilde = token.startsWith("~") ? token.slice(1) : token;
+  const candidates = [
+    buildUpstreamTokenStreamUrl(baseDomain, token),
+    buildUpstreamTokenStreamUrl(baseDomain, noTilde),
+    `${baseDomain.replace(/\/$/, "")}/stream/${token}`,
+    `${baseDomain.replace(/\/$/, "")}/stream/${noTilde}`,
+  ];
+  return Array.from(new Set(candidates));
 }
 
 export default async function getStream(req: Request, res: Response) {
@@ -131,41 +151,72 @@ export default async function getStream(req: Request, res: Response) {
       for (const baseDomain of baseCandidates) {
         lastBaseTried = baseDomain;
         console.log(`[getStream] Mirroring from: ${baseDomain}`);
+        const referers = buildRefererCandidates(baseDomain);
         for (const path of playlistPathCandidates) {
           const playlistUrl = `${baseDomain}/playlist/${path}.txt`;
-          try {
-            const response = await getWithOptionalTor(playlistUrl, {
-              headers: {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Referer": `${baseDomain}/`,
-                "Origin": baseDomain,
-                "X-Csrf-Token": key
-              },
-              timeout: 15000,
-            });
+          for (const referer of referers) {
+            try {
+              const response = await getWithOptionalTor(playlistUrl, {
+                headers: {
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                  "Referer": referer,
+                  "Origin": referer.replace(/\/$/, ""),
+                  "X-Csrf-Token": key
+                },
+                timeout: 15000,
+              });
 
-            const normalized = normalizeUpstreamStreamUrl(baseDomain, response.data);
-            if (normalized.startsWith("http")) {
-              finalStreamUrl = normalized;
-              usedProxyRef = baseDomain;
-              break;
+              const normalized = normalizeUpstreamStreamUrl(baseDomain, response.data);
+              if (normalized.startsWith("http")) {
+                finalStreamUrl = normalized;
+                usedProxyRef = baseDomain;
+                break;
+              }
+            } catch (err: any) {
+              lastErr = err;
+              console.log(`[getStream] Failed playlist fetch ${playlistUrl} with referer ${referer}: ${err.message}`);
             }
-          } catch (err: any) {
-            lastErr = err;
-            console.log(`[getStream] Failed playlist fetch ${playlistUrl}: ${err.message}`);
           }
+          if (finalStreamUrl) break;
         }
         if (finalStreamUrl) break;
       }
 
       if (!finalStreamUrl) {
         // Some providers no longer return direct playlist URLs from /playlist/*.txt.
-        // In that case, proxy the tokenized /stream path directly and let proxy rewrite HLS.
-        finalStreamUrl = buildUpstreamTokenStreamUrl(lastBaseTried, token);
-        usedProxyRef = usedProxyRef || lastBaseTried;
+        // In that case, probe tokenized /stream variants and proxy the first reachable URL.
+        const fallbackBase = proxyRef || primaryBase || lastBaseTried;
+        const fallbackReferers = buildRefererCandidates(fallbackBase);
+        const streamCandidates = buildUpstreamTokenStreamCandidates(fallbackBase, token);
+
+        for (const streamUrl of streamCandidates) {
+          for (const referer of fallbackReferers) {
+            try {
+              const response = await getWithOptionalTor(streamUrl, {
+                headers: {
+                  "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                  "Referer": referer,
+                  "Origin": referer.replace(/\/$/, ""),
+                  "Accept": "*/*",
+                },
+                timeout: 12000,
+              });
+
+              if (response.status >= 200 && response.status < 400) {
+                finalStreamUrl = streamUrl;
+                usedProxyRef = fallbackBase;
+                break;
+              }
+            } catch (err: any) {
+              lastErr = err;
+              console.log(`[getStream] Failed stream probe ${streamUrl} with referer ${referer}: ${err.message}`);
+            }
+          }
+          if (finalStreamUrl) break;
+        }
 
         const staleStreamUrl = cache.get(streamCacheStaleKey) as string | null;
-        if (staleStreamUrl && staleStreamUrl.startsWith("http")) {
+        if (!finalStreamUrl && staleStreamUrl && staleStreamUrl.startsWith("http")) {
           console.log(`[getStream] Upstream fetch failed, using stale stream cache: ${lastErr?.message || "unknown error"}`);
           finalStreamUrl = staleStreamUrl;
           usedProxyRef = proxyRef;
