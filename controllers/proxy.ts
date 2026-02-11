@@ -29,6 +29,19 @@ async function buildProxyTargetCandidates(targetUrl: string, proxyRef?: string):
             .split(",")
             .map((v) => v.trim())
             .filter(Boolean),
+        ...(process.env.PLAYER_ORIGINS || "")
+            .split(",")
+            .map((v) => v.trim())
+            .filter(Boolean),
+        (() => {
+            const raw = (process.env.BASE_URL || "").trim();
+            if (!raw) return "";
+            try {
+                return new URL(raw).origin;
+            } catch {
+                return "";
+            }
+        })(),
         (process.env.PLAYER_HARDCODED_FALLBACK || "").trim(),
     ];
 

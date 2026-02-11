@@ -39,12 +39,27 @@ async function getWithOptionalTor(url: string, config: any) {
 }
 
 function buildCandidatePlayerBases(primaryBase: string): string[] {
+  const fromPlayerOrigins = (process.env.PLAYER_ORIGINS || "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+  const baseUrlOrigin = (() => {
+    const raw = (process.env.BASE_URL || "").trim();
+    if (!raw) return "";
+    try {
+      return new URL(raw).origin;
+    } catch {
+      return "";
+    }
+  })();
   const cleanedPrimary = primaryBase.replace(/\/$/, "");
   const fromEnv = [
     ...(process.env.INFO_PLAYER_FALLBACKS || "")
       .split(",")
       .map((v) => v.trim())
       .filter(Boolean),
+    ...fromPlayerOrigins,
+    baseUrlOrigin,
     (process.env.PLAYER_HARDCODED_FALLBACK || "").trim(),
   ]
     .map((v) => v.replace(/\/$/, ""))
@@ -83,7 +98,14 @@ export default async function getInfo(id: string) {
   try {
     const playerUrl = await getPlayerUrl();
     const candidateBases = buildCandidatePlayerBases(playerUrl);
-    const paths = [`/play/${id}`, `/v/${id}`, `/watch/${id}`];
+    const paths = [
+      `/play/${id}`,
+      `/play/${id}?tr=1`,
+      `/v/${id}`,
+      `/watch/${id}`,
+      `/embed/${id}`,
+      `/e/${id}`,
+    ];
     const referers = (process.env.INFO_REFERERS || "https://allmovieland.link/,https://google.com/")
       .split(",")
       .map((v) => v.trim())

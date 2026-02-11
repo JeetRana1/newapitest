@@ -40,11 +40,26 @@ function buildProxiedLink(req: Request, finalStreamUrl: string, proxyRef: string
 }
 
 function buildCandidateBases(primaryBase: string): string[] {
+  const fromPlayerOrigins = (process.env.PLAYER_ORIGINS || "")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean);
+  const baseUrlOrigin = (() => {
+    const raw = (process.env.BASE_URL || "").trim();
+    if (!raw) return "";
+    try {
+      return new URL(raw).origin;
+    } catch {
+      return "";
+    }
+  })();
   const fromEnv = [
     ...(process.env.INFO_PLAYER_FALLBACKS || "")
       .split(",")
       .map((v) => v.trim())
       .filter(Boolean),
+    ...fromPlayerOrigins,
+    baseUrlOrigin,
     (process.env.PLAYER_HARDCODED_FALLBACK || "").trim(),
   ]
     .map((v) => v.replace(/\/$/, ""))
