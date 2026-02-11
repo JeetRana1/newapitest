@@ -60,6 +60,24 @@ function buildCandidatePlayerBases(primaryBase: string): string[] {
   return deduped;
 }
 
+function attachProxyRefToPlaylist(items: any[], base: string): any[] {
+  const baseRef = base.replace(/\/$/, "");
+  return items.map((item: any) => {
+    if (!item || typeof item !== "object") return item;
+
+    const next: any = { ...item };
+    if (typeof next.file === "string" && !next.file.startsWith("http") && !next.file.includes("proxy_ref=")) {
+      const separator = next.file.includes("?") ? "&" : "?";
+      next.file = `${next.file}${separator}proxy_ref=${encodeURIComponent(baseRef)}`;
+    }
+
+    if (Array.isArray(next.folder)) {
+      next.folder = attachProxyRefToPlaylist(next.folder, baseRef);
+    }
+    return next;
+  });
+}
+
 export default async function getInfo(id: string) {
   try {
     const playerUrl = await getPlayerUrl();
@@ -129,10 +147,11 @@ export default async function getInfo(id: string) {
               : [];
 
             if (playlist.length > 0) {
+              const playlistWithRef = attachProxyRefToPlaylist(playlist, base);
               return {
                 success: true,
                 data: {
-                  playlist,
+                  playlist: playlistWithRef,
                   key,
                 },
               };

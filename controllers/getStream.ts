@@ -38,6 +38,36 @@ function buildProxiedLink(req: Request, finalStreamUrl: string, proxyRef: string
   return `${protocol}://${host}/api/v1/proxy?url=${encodeURIComponent(finalStreamUrl)}${proxySuffix}`;
 }
 
+function buildCandidateBases(primaryBase: string): string[] {
+  const fromEnv = [
+    ...(process.env.INFO_PLAYER_FALLBACKS || "")
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean),
+    (process.env.PLAYER_HARDCODED_FALLBACK || "").trim(),
+  ]
+    .map((v) => v.replace(/\/$/, ""))
+    .filter(Boolean);
+
+  const seen = new Set<string>();
+  const ordered = [primaryBase.replace(/\/$/, ""), ...fromEnv];
+  const out: string[] = [];
+  for (const base of ordered) {
+    if (!base || seen.has(base)) continue;
+    seen.add(base);
+    out.push(base);
+  }
+  return out;
+}
+
+function normalizeUpstreamStreamUrl(baseDomain: string, raw: any): string {
+  const text = typeof raw === "string" ? raw.trim() : String(raw ?? "").trim();
+  if (!text) return "";
+  if (text.startsWith("http")) return text;
+  if (text.startsWith("/")) return new URL(text, `${baseDomain}/`).toString();
+  return "";
+}
+
 export default async function getStream(req: Request, res: Response) {
   const { file, key } = req.body;
 
@@ -49,6 +79,7 @@ export default async function getStream(req: Request, res: Response) {
     let finalStreamUrl = "";
     let token = decodeURIComponent(file);
     let proxyRef = "";
+    let usedProxyRef = "";
 
     // Support for proxy_ref hint in token
     if (token.includes('proxy_ref=')) {
@@ -73,30 +104,51 @@ export default async function getStream(req: Request, res: Response) {
     if (token.startsWith('http')) {
       finalStreamUrl = token;
     } else {
-      // New logic: fetch token from mirror
-      const baseDomain = (proxyRef && proxyRef !== '' ? proxyRef : await getPlayerUrl()).replace(/\/$/, '');
-      const path = token.startsWith('~') ? token.slice(1) : token;
-      const playlistUrl = `${baseDomain}/playlist/${path}.txt`;
+      const primaryBase = (proxyRef && proxyRef !== '' ? proxyRef : await getPlayerUrl()).replace(/\/$/, '');
+      const baseCandidates = buildCandidateBases(primaryBase);
+      const rawPath = token.startsWith('~') ? token.slice(1) : token;
+      const pathCandidates = Array.from(new Set([rawPath, encodeURIComponent(rawPath)]));
+      let lastErr: any = null;
 
-      console.log(`[getStream] Mirroring from: ${baseDomain}`);
-      try {
-        const response = await getWithOptionalTor(playlistUrl, {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            "Referer": baseDomain + "/",
-            "X-Csrf-Token": key
-          },
-          timeout: 15000,
-        });
+      for (const baseDomain of baseCandidates) {
+        console.log(`[getStream] Mirroring from: ${baseDomain}`);
+        for (const path of pathCandidates) {
+          const playlistUrl = `${baseDomain}/playlist/${path}.txt`;
+          try {
+            const response = await getWithOptionalTor(playlistUrl, {
+              headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Referer": `${baseDomain}/`,
+                "Origin": baseDomain,
+                "X-Csrf-Token": key
+              },
+              timeout: 15000,
+            });
 
-        finalStreamUrl = response.data;
-      } catch (err: any) {
+            const normalized = normalizeUpstreamStreamUrl(baseDomain, response.data);
+            if (normalized.startsWith("http")) {
+              finalStreamUrl = normalized;
+              usedProxyRef = baseDomain;
+              break;
+            }
+          } catch (err: any) {
+            lastErr = err;
+            console.log(`[getStream] Failed playlist fetch ${playlistUrl}: ${err.message}`);
+          }
+        }
+        if (finalStreamUrl) break;
+      }
+
+      if (!finalStreamUrl) {
         const staleStreamUrl = cache.get(streamCacheStaleKey) as string | null;
         if (staleStreamUrl && staleStreamUrl.startsWith("http")) {
-          console.log(`[getStream] Upstream fetch failed, using stale stream cache: ${err.message}`);
+          console.log(`[getStream] Upstream fetch failed, using stale stream cache: ${lastErr?.message || "unknown error"}`);
           finalStreamUrl = staleStreamUrl;
+          usedProxyRef = proxyRef;
+        } else if (lastErr) {
+          throw lastErr;
         } else {
-          throw err;
+          throw new Error("Unable to resolve playlist URL from any known player base");
         }
       }
     }
@@ -107,7 +159,7 @@ export default async function getStream(req: Request, res: Response) {
 
     cache.set(streamCacheKey, finalStreamUrl, STREAM_CACHE_TTL_MS);
     cache.set(streamCacheStaleKey, finalStreamUrl, STREAM_CACHE_STALE_TTL_MS);
-    const proxiedLink = buildProxiedLink(req, finalStreamUrl, proxyRef);
+    const proxiedLink = buildProxiedLink(req, finalStreamUrl, usedProxyRef || proxyRef);
 
     res.json({
       success: true,
