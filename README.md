@@ -10,7 +10,7 @@ A robust streaming API that fetches and proxies video content from various sourc
 - **Proxy Support**: Built-in proxy with Tor support for accessing restricted content
 - **HLS Support**: Full support for HLS streaming with manifest rewriting
 
-## Setup
+## Setup w
 
 1. Clone the repository:
 ```bash
