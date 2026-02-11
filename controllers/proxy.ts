@@ -136,13 +136,9 @@ export default async function proxy(req: Request, res: Response) {
                     referer = `https://${uri.host}/`;
                 }
             } else {
-                // Generic Cross-Origin Handling
-                // If the target host differs from the proxy_ref host, fallback to target host
+                // Trust explicit upstream hint from getStream/manifest rewriting.
                 try {
-                    const proxyHost = new URL(proxyRef).hostname;
-                    if (!url.includes(proxyHost)) {
-                        referer = `https://${uri.host}/`;
-                    }
+                    referer = new URL(proxyRef).href;
                 } catch (e) {
                     referer = `https://${uri.host}/`;
                 }

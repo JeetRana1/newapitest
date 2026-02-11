@@ -18,6 +18,7 @@ export default async function getStream(req: Request, res: Response) {
     let finalStreamUrl = "";
     let token = decodeURIComponent(file);
     let proxyRef = "";
+    let refererHint = "";
 
     // Support for proxy_ref hint in token
     if (token.includes('proxy_ref=')) {
@@ -29,14 +30,27 @@ export default async function getStream(req: Request, res: Response) {
 
     if (token.startsWith('http')) {
       finalStreamUrl = token;
+      if (proxyRef) {
+        refererHint = proxyRef;
+      } else {
+        try {
+          refererHint = `${new URL(finalStreamUrl).origin}/`;
+        } catch {
+          refererHint = "";
+        }
+      }
     } else {
       const streamCacheKey = `stream_url_${token}_${proxyRef || "none"}`;
       const cachedStreamUrl = cache.get(streamCacheKey);
       if (cachedStreamUrl) {
         finalStreamUrl = cachedStreamUrl;
+        if (proxyRef) {
+          refererHint = proxyRef;
+        }
       } else {
       // New logic: fetch token from mirror
         const baseDomain = (proxyRef && proxyRef !== '' ? proxyRef : await getPlayerUrl()).replace(/\/$/, '');
+        refererHint = `${baseDomain}/`;
         const path = token.startsWith('~') ? token.slice(1) : token;
         const playlistUrl = `${baseDomain}/playlist/${path}.txt`;
 
@@ -76,7 +90,7 @@ export default async function getStream(req: Request, res: Response) {
 
     // Wrap in Proxy
     const host = req.get('host');
-    const proxySuffix = proxyRef ? `&proxy_ref=${encodeURIComponent(proxyRef)}` : "";
+    const proxySuffix = refererHint ? `&proxy_ref=${encodeURIComponent(refererHint)}` : "";
     const proxiedLink = `https://${host}/api/v1/proxy?url=${encodeURIComponent(finalStreamUrl)}${proxySuffix}`;
 
     res.json({
