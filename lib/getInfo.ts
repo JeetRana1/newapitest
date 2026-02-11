@@ -3,7 +3,29 @@ import * as cheerio from "cheerio";
 import { getPlayerUrl } from "./getPlayerUrl";
 import { SocksProxyAgent } from 'socks-proxy-agent';
 
-const torAgent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
+const torProxyUrl = (process.env.TOR_PROXY_URL || "").trim();
+const torAgent = torProxyUrl ? new SocksProxyAgent(torProxyUrl) : null;
+
+async function getWithOptionalTor(url: string, config: any) {
+  if (!torAgent) {
+    return axios.get(url, config);
+  }
+
+  try {
+    return await axios.get(url, {
+      ...config,
+      httpAgent: torAgent,
+      httpsAgent: torAgent,
+    });
+  } catch (err: any) {
+    const message = String(err?.message || "");
+    if (err?.code === "ECONNREFUSED" || message.includes("127.0.0.1:9050")) {
+      console.log("[getInfo] Tor unavailable. Falling back to direct request.");
+      return axios.get(url, config);
+    }
+    throw err;
+  }
+}
 
 export default async function getInfo(id: string) {
   try {
@@ -35,7 +57,7 @@ export default async function getInfo(id: string) {
 
       for (const referer of referers) {
         try {
-          const response = await axios.get(targetUrl, {
+          const response = await getWithOptionalTor(targetUrl, {
             headers: {
               "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
               "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -44,8 +66,6 @@ export default async function getInfo(id: string) {
               "Origin": referer.replace(/\/$/, ''),
               "Cache-Control": "max-age=0"
             },
-            httpAgent: torAgent,
-            httpsAgent: torAgent,
             timeout: 15000
           });
 
@@ -66,15 +86,13 @@ export default async function getInfo(id: string) {
 
             const link = file.startsWith("http") ? file : `${playerUrl.endsWith('/') ? playerUrl.slice(0, -1) : playerUrl}${file}`;
 
-            const playlistRes = await axios.get(link, {
+            const playlistRes = await getWithOptionalTor(link, {
               headers: {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
                 "Accept": "*/*",
                 "Referer": targetUrl,
                 "X-Csrf-Token": key
               },
-              httpAgent: torAgent,
-              httpsAgent: torAgent,
               timeout: 15000
             });
 

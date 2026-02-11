@@ -3,7 +3,8 @@ import { Request, Response } from "express";
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import { getPlayerUrl } from "../lib/getPlayerUrl";
 
-const torAgent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
+const torProxyUrl = (process.env.TOR_PROXY_URL || "").trim();
+const torAgent = torProxyUrl ? new SocksProxyAgent(torProxyUrl) : null;
 const proxyDefaultReferer = (process.env.PROXY_DEFAULT_REFERER || "").trim();
 const proxySlimeReferer = (process.env.PROXY_SLIME_REFERER || "").trim();
 const proxyVidsrcReferer = (process.env.PROXY_VIDSRC_REFERER || "").trim();
@@ -25,8 +26,8 @@ export default async function proxy(req: Request, res: Response) {
     if (targetUrl && (targetUrl.includes('lizer123') || targetUrl.includes('getm3u8'))) {
         console.log(`[Proxy Raw] Tor Passthrough for fragile audio: ${targetUrl}`);
         try {
-            const rawRes = await axios.get(targetUrl, {
-                responseType: 'arraybuffer', // Fetch as buffer to inspect content
+            const rawRequestConfig = {
+                responseType: 'arraybuffer' as const, // Fetch as buffer to inspect content
                 headers: {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
                     "Accept": "*/*",
@@ -37,12 +38,27 @@ export default async function proxy(req: Request, res: Response) {
                     "Pragma": "no-cache",
                     "Cache-Control": "no-cache"
                 },
-                httpAgent: torAgent,
-                httpsAgent: torAgent,
                 timeout: 20000,
                 maxRedirects: 5,
-                validateStatus: (status) => status < 400
-            });
+                validateStatus: (status: number) => status < 400
+            };
+
+            let rawRes;
+            try {
+                rawRes = await axios.get(targetUrl, {
+                    ...rawRequestConfig,
+                    httpAgent: torAgent || undefined,
+                    httpsAgent: torAgent || undefined,
+                });
+            } catch (err: any) {
+                const message = String(err?.message || "");
+                if (torAgent && (err?.code === "ECONNREFUSED" || message.includes("127.0.0.1:9050"))) {
+                    console.log("[Proxy Raw] Tor unavailable. Falling back to direct request.");
+                    rawRes = await axios.get(targetUrl, rawRequestConfig);
+                } else {
+                    throw err;
+                }
+            }
 
             // Handle Redirections properly
             const finalUrl = rawRes.request.res.responseUrl || targetUrl;
@@ -183,10 +199,11 @@ export default async function proxy(req: Request, res: Response) {
         };
 
         const tryFetch = async (useTor: boolean) => {
+            const shouldUseTor = useTor && !!torAgent;
             return await axios.get(targetUrl, {
                 headers: getProxyHeaders(targetUrl),
-                httpAgent: useTor ? torAgent : undefined,
-                httpsAgent: useTor ? torAgent : undefined,
+                httpAgent: shouldUseTor ? torAgent || undefined : undefined,
+                httpsAgent: shouldUseTor ? torAgent || undefined : undefined,
                 responseType: isM3U8 ? 'text' : 'stream',
                 timeout: isSegment ? 20000 : 30000, // Segments should be faster
                 maxRedirects: 5,

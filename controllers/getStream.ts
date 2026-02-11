@@ -3,7 +3,29 @@ import { Request, Response } from "express";
 import { getPlayerUrl } from "../lib/getPlayerUrl";
 import { SocksProxyAgent } from 'socks-proxy-agent';
 
-const torAgent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
+const torProxyUrl = (process.env.TOR_PROXY_URL || "").trim();
+const torAgent = torProxyUrl ? new SocksProxyAgent(torProxyUrl) : null;
+
+async function getWithOptionalTor(url: string, config: any) {
+  if (!torAgent) {
+    return axios.get(url, config);
+  }
+
+  try {
+    return await axios.get(url, {
+      ...config,
+      httpAgent: torAgent,
+      httpsAgent: torAgent,
+    });
+  } catch (err: any) {
+    const message = String(err?.message || "");
+    if (err?.code === "ECONNREFUSED" || message.includes("127.0.0.1:9050")) {
+      console.log("[getStream] Tor unavailable. Falling back to direct request.");
+      return axios.get(url, config);
+    }
+    throw err;
+  }
+}
 
 export default async function getStream(req: Request, res: Response) {
   const { file, key } = req.body;
@@ -34,14 +56,12 @@ export default async function getStream(req: Request, res: Response) {
       const playlistUrl = `${baseDomain}/playlist/${path}.txt`;
 
       console.log(`[getStream] Mirroring from: ${baseDomain}`);
-      const response = await axios.get(playlistUrl, {
+      const response = await getWithOptionalTor(playlistUrl, {
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
           "Referer": baseDomain + "/",
           "X-Csrf-Token": key
         },
-        httpAgent: torAgent,
-        httpsAgent: torAgent,
         timeout: 15000,
       });
 
