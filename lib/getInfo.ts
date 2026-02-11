@@ -8,6 +8,7 @@ const torAgent = torProxyUrl ? new SocksProxyAgent(torProxyUrl) : null;
 const INFO_REQUEST_TIMEOUT_MS = Math.max(3000, Number(process.env.INFO_REQUEST_TIMEOUT_MS || 8000));
 const INFO_PLAYLIST_TIMEOUT_MS = Math.max(3000, Number(process.env.INFO_PLAYLIST_TIMEOUT_MS || 10000));
 const INFO_MAX_BASES = Math.max(1, Number(process.env.INFO_MAX_BASES || 4));
+const INFO_ENABLE_TOKEN_FALLBACK = String(process.env.INFO_ENABLE_TOKEN_FALLBACK || "true").toLowerCase() !== "false";
 
 function isExpectedMissError(err: any): boolean {
   const status = Number(err?.response?.status || 0);
@@ -130,6 +131,23 @@ function attachProxyRefToPlaylist(items: any[], base: string): any[] {
     }
     return next;
   });
+}
+
+function buildTokenFallbackPlaylist(id: string, candidateBases: string[]): any[] {
+  const rank = (base: string) => {
+    if (/allmovieland\.(link|io|net|tv)$/i.test(base)) return 0;
+    if (/(heast|vekna|404)/i.test(base)) return 2;
+    return 1;
+  };
+
+  const orderedBases = [...candidateBases]
+    .sort((a, b) => rank(a) - rank(b))
+    .slice(0, Math.max(1, INFO_MAX_BASES));
+
+  return orderedBases.map((base, idx) => ({
+    title: `Auto ${idx + 1}`,
+    file: `~${id}?proxy_ref=${encodeURIComponent(base.replace(/\/$/, ""))}`,
+  }));
 }
 
 async function tryDirectPlaylistById(base: string, id: string, referers: string[]) {
@@ -289,18 +307,47 @@ export default async function getInfo(id: string) {
       }
     }
 
+    if (INFO_ENABLE_TOKEN_FALLBACK) {
+      const tokenFallback = buildTokenFallbackPlaylist(id, candidateBases);
+      if (tokenFallback.length > 0) {
+        console.log("[getInfo] Returning token fallback playlist after probe miss.");
+        return {
+          success: true,
+          data: {
+            playlist: tokenFallback,
+            key: (process.env.INFO_FALLBACK_KEY || "direct").trim(),
+          },
+        };
+      }
+    }
+
     return {
       success: false,
       message: lastError
         ? `API Error: ${lastError.message}${lastTargetUrl ? ` (last tried: ${lastTargetUrl})` : ""}`
         : forbiddenHits > 0
           ? "Provider blocked this server with HTTP 403/401 on page routes. Try different egress/referer or use direct playlist fallback mirrors."
-        : hadHttpResponse
-          ? "Media page loaded but no playable source found on known paths"
-          : "Media not found on any known paths",
+          : hadHttpResponse
+            ? "Media page loaded but no playable source found on known paths"
+            : "Media not found on any known paths",
     };
   } catch (error: any) {
     console.error("Error in getInfo:", error.message);
+    if (INFO_ENABLE_TOKEN_FALLBACK) {
+      const fallbackPlayerUrl = await getPlayerUrl().catch(() => "");
+      const fallbackBases = fallbackPlayerUrl ? buildCandidatePlayerBases(fallbackPlayerUrl) : [];
+      const tokenFallback = buildTokenFallbackPlaylist(id, fallbackBases);
+      if (tokenFallback.length > 0) {
+        console.log("[getInfo] Returning token fallback playlist from outer catch.");
+        return {
+          success: true,
+          data: {
+            playlist: tokenFallback,
+            key: (process.env.INFO_FALLBACK_KEY || "direct").trim(),
+          },
+        };
+      }
+    }
     return {
       success: false,
       message: `API Error: ${error.message}`,
