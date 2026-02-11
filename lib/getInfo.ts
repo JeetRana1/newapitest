@@ -15,6 +15,11 @@ function isExpectedMissError(err: any): boolean {
   return status === 404 || ["ENOTFOUND", "EAI_AGAIN"].includes(code);
 }
 
+function isForbiddenError(err: any): boolean {
+  const status = Number(err?.response?.status || 0);
+  return status === 401 || status === 403;
+}
+
 function isTimeoutError(err: any): boolean {
   const message = String(err?.message || "");
   const code = String(err?.code || "");
@@ -127,6 +132,48 @@ function attachProxyRefToPlaylist(items: any[], base: string): any[] {
   });
 }
 
+async function tryDirectPlaylistById(base: string, id: string, referers: string[]) {
+  const cleanedBase = base.replace(/\/$/, "");
+  const tokens = Array.from(new Set([id, `~${id}`, encodeURIComponent(id), encodeURIComponent(`~${id}`)]));
+  const urls = tokens.map((token) => `${cleanedBase}/playlist/${token}.txt`);
+  let lastError: any = null;
+
+  for (const url of urls) {
+    for (const referer of referers) {
+      try {
+        const response = await getWithOptionalTor(url, {
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "Accept": "*/*",
+            "Referer": referer,
+            "Origin": referer.replace(/\/$/, ""),
+          },
+          timeout: INFO_PLAYLIST_TIMEOUT_MS,
+        });
+
+        const playlist = Array.isArray(response.data)
+          ? response.data.filter((item: any) => item && (item.file || item.folder))
+          : [];
+
+        if (playlist.length > 0) {
+          return { playlist: attachProxyRefToPlaylist(playlist, base), url };
+        }
+      } catch (e: any) {
+        lastError = e;
+        if (isTimeoutError(e) || isForbiddenError(e)) {
+          return null;
+        }
+      }
+    }
+  }
+
+  if (lastError) {
+    console.log(`[getInfo] Direct playlist probe failed on ${base}: ${lastError.message}`);
+  }
+  return null;
+}
+
 export default async function getInfo(id: string) {
   try {
     const playerUrl = await getPlayerUrl();
@@ -148,6 +195,7 @@ export default async function getInfo(id: string) {
 
     let lastError: any = null;
     let hadHttpResponse = false;
+    let forbiddenHits = 0;
     let lastTargetUrl = "";
 
     for (const base of candidateBases) {
@@ -215,12 +263,29 @@ export default async function getInfo(id: string) {
               // If a base is timing out, skip the rest of its paths to prevent very long API latency.
               skipRemainingBasePaths = true;
             }
-            if (!isExpectedMissError(e)) {
+            if (isForbiddenError(e)) {
+              forbiddenHits += 1;
+              // Repeated 403/401 on one base usually means anti-bot block; skip further paths on that base.
+              skipRemainingBasePaths = true;
+            }
+            if (!isExpectedMissError(e) && !isForbiddenError(e)) {
               lastError = e;
             }
             if (skipRemainingBasePaths) break;
           }
         }
+      }
+
+      // Fallback: some mirrors expose playlist endpoints directly even when page routes are blocked.
+      const directPlaylist = await tryDirectPlaylistById(base, id, referers);
+      if (directPlaylist?.playlist?.length) {
+        return {
+          success: true,
+          data: {
+            playlist: directPlaylist.playlist,
+            key: (process.env.INFO_FALLBACK_KEY || "direct").trim(),
+          },
+        };
       }
     }
 
@@ -228,6 +293,8 @@ export default async function getInfo(id: string) {
       success: false,
       message: lastError
         ? `API Error: ${lastError.message}${lastTargetUrl ? ` (last tried: ${lastTargetUrl})` : ""}`
+        : forbiddenHits > 0
+          ? "Provider blocked this server with HTTP 403/401 on page routes. Try different egress/referer or use direct playlist fallback mirrors."
         : hadHttpResponse
           ? "Media page loaded but no playable source found on known paths"
           : "Media not found on any known paths",
