@@ -1,32 +1,6 @@
 import axios from "axios";
 
-let cachedPlayerUrl: string | null = null;
-let cachedAt = 0;
-let inflight: Promise<string> | null = null;
-const PLAYER_URL_TTL_MS = 10 * 60 * 1000;
-
 export async function getPlayerUrl() {
-  const now = Date.now();
-  if (cachedPlayerUrl && now - cachedAt < PLAYER_URL_TTL_MS) {
-    return cachedPlayerUrl;
-  }
-
-  if (inflight) {
-    return inflight;
-  }
-
-  inflight = resolvePlayerUrl();
-  try {
-    const resolved = await inflight;
-    cachedPlayerUrl = resolved;
-    cachedAt = Date.now();
-    return resolved;
-  } finally {
-    inflight = null;
-  }
-}
-
-async function resolvePlayerUrl() {
   let baseUrl = (process.env.BASE_URL || 'https://allmovieland.link/player.js').trim();
 
   console.log(`Base URL: ${baseUrl}`);

@@ -86,21 +86,11 @@ export default async function proxy(req: Request, res: Response) {
             const streamPart = fullPath.substring(fullPath.indexOf('/stream/') + 8);
             const [pathSegment, query] = streamPart.split('?');
             try {
-                // Decode base64 only when it is clearly valid and safe.
-                // Opaque stream tokens often look base64-ish, so blind decode corrupts URLs.
+                // Try decoding base64 if needed
                 let path = pathSegment;
                 try {
-                    const normalized = pathSegment.replace(/-/g, '+').replace(/_/g, '/');
-                    const hasValidAlphabet = /^[A-Za-z0-9+/=]+$/.test(normalized) && normalized.length % 4 === 0;
-                    if (hasValidAlphabet) {
-                        const decoded = Buffer.from(normalized, 'base64').toString('utf-8');
-                        const printable = /^[\x20-\x7E]+$/.test(decoded);
-                        const looksLikePath = decoded.includes('/') || decoded.includes('.') || decoded.startsWith('http');
-                        const roundTrip = Buffer.from(decoded, 'utf-8').toString('base64').replace(/=+$/, '') === normalized.replace(/=+$/, '');
-                        if (printable && looksLikePath && roundTrip) {
-                            path = decoded;
-                        }
-                    }
+                    const decoded = Buffer.from(pathSegment, 'base64').toString('utf-8');
+                    if (decoded.includes('/') || decoded.includes('.')) path = decoded;
                 } catch (e) { }
 
                 const playerUrl = await getPlayerUrl();
@@ -173,7 +163,8 @@ export default async function proxy(req: Request, res: Response) {
                 "Sec-Fetch-Site": "cross-site",
                 "DNT": "1",
                 "Pragma": "no-cache",
-                "Cache-Control": "no-cache"
+                "Cache-Control": "no-cache",
+                "Host": uri.host
             };
         };
 
@@ -250,8 +241,7 @@ export default async function proxy(req: Request, res: Response) {
             const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
 
             // Sustain the referer through recursive quality tracks and segments
-            const stickyRef = proxyRef || targetUrl;
-            const refParam = `&proxy_ref=${encodeURIComponent(stickyRef)}`;
+            const refParam = proxyRef ? `&proxy_ref=${encodeURIComponent(proxyRef)}` : "";
 
             const rewrittenLines = content.split('\n').map(line => {
                 const trimmed = line.trim();
