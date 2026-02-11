@@ -16,7 +16,14 @@ export default async function getStream(req: Request, res: Response) {
 
   try {
     let finalStreamUrl = "";
-    let token = decodeURIComponent(file);
+    let token = file as string;
+    try {
+      token = decodeURIComponent(token);
+    } catch {
+      // Keep raw token if it is not URI-encoded.
+    }
+    // Some clients/providers may turn "+" into spaces in transit.
+    token = token.replace(/ /g, "+");
     let proxyRef = "";
     let refererHint = "";
 
@@ -52,7 +59,8 @@ export default async function getStream(req: Request, res: Response) {
         const baseDomain = (proxyRef && proxyRef !== '' ? proxyRef : await getPlayerUrl()).replace(/\/$/, '');
         refererHint = `${baseDomain}/`;
         const path = token.startsWith('~') ? token.slice(1) : token;
-        const playlistUrl = `${baseDomain}/playlist/${path}.txt`;
+        const encodedPath = encodeURIComponent(path);
+        const playlistUrl = `${baseDomain}/playlist/${encodedPath}.txt`;
 
         console.log(`[getStream] Mirroring from: ${baseDomain}`);
         const requestConfig = {

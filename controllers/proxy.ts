@@ -86,12 +86,8 @@ export default async function proxy(req: Request, res: Response) {
             const streamPart = fullPath.substring(fullPath.indexOf('/stream/') + 8);
             const [pathSegment, query] = streamPart.split('?');
             try {
-                // Try decoding base64 if needed
+                // Keep stream token as-is; do not auto base64-decode arbitrary tokens.
                 let path = pathSegment;
-                try {
-                    const decoded = Buffer.from(pathSegment, 'base64').toString('utf-8');
-                    if (decoded.includes('/') || decoded.includes('.')) path = decoded;
-                } catch (e) { }
 
                 const playerUrl = await getPlayerUrl();
                 const base = playerUrl.replace(/\/$/, '');
