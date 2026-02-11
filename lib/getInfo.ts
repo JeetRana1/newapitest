@@ -3,7 +3,7 @@ import * as cheerio from "cheerio";
 import { getPlayerUrl } from "./getPlayerUrl";
 import { SocksProxyAgent } from "socks-proxy-agent";
 
-const torProxyUrl = (process.env.TOR_PROXY_URL || "socks5h://127.0.0.1:9050").trim();
+const torProxyUrl = (process.env.TOR_PROXY_URL || "").trim();
 const torAgent = torProxyUrl ? new SocksProxyAgent(torProxyUrl) : null;
 
 function shouldFallbackDirect(err: any): boolean {
@@ -13,6 +13,7 @@ function shouldFallbackDirect(err: any): boolean {
   if (message.includes("Socks5 proxy rejected connection")) return true;
   if (message.includes("HostUnreachable")) return true;
   if (message.includes("127.0.0.1:9050")) return true;
+  if (message.includes("Proxy connection timed out")) return true;
 
   return ["ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "ECONNABORTED", "EAI_AGAIN", "ENOTFOUND"].includes(code);
 }

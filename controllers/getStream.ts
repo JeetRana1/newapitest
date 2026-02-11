@@ -30,12 +30,13 @@ async function getWithOptionalTor(url: string, config: any) {
   }
 }
 
-function buildProxiedLink(req: Request, finalStreamUrl: string, proxyRef: string) {
+function buildProxiedLink(req: Request, finalStreamUrl: string, proxyRef: string, csrfKey?: string) {
   const host = req.get('host');
   const forwardedProto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim();
   const protocol = forwardedProto || req.protocol || "https";
   const proxySuffix = proxyRef ? `&proxy_ref=${encodeURIComponent(proxyRef)}` : "";
-  return `${protocol}://${host}/api/v1/proxy?url=${encodeURIComponent(finalStreamUrl)}${proxySuffix}`;
+  const csrfSuffix = csrfKey ? `&x_csrf=${encodeURIComponent(csrfKey)}` : "";
+  return `${protocol}://${host}/api/v1/proxy?url=${encodeURIComponent(finalStreamUrl)}${proxySuffix}${csrfSuffix}`;
 }
 
 function buildCandidateBases(primaryBase: string): string[] {
@@ -129,7 +130,7 @@ export default async function getStream(req: Request, res: Response) {
 
     const cachedStreamUrl = cache.get(streamCacheKey) as string | null;
     if (cachedStreamUrl && cachedStreamUrl.startsWith("http")) {
-      const proxiedLink = buildProxiedLink(req, cachedStreamUrl, proxyRef);
+      const proxiedLink = buildProxiedLink(req, cachedStreamUrl, proxyRef, key);
       return res.json({
         success: true,
         data: { link: proxiedLink, cached: true },
@@ -198,6 +199,7 @@ export default async function getStream(req: Request, res: Response) {
                   "Referer": referer,
                   "Origin": referer.replace(/\/$/, ""),
                   "Accept": "*/*",
+                  "X-Csrf-Token": key,
                 },
                 timeout: 12000,
               });
@@ -230,7 +232,7 @@ export default async function getStream(req: Request, res: Response) {
 
     cache.set(streamCacheKey, finalStreamUrl, STREAM_CACHE_TTL_MS);
     cache.set(streamCacheStaleKey, finalStreamUrl, STREAM_CACHE_STALE_TTL_MS);
-    const proxiedLink = buildProxiedLink(req, finalStreamUrl, usedProxyRef || proxyRef);
+    const proxiedLink = buildProxiedLink(req, finalStreamUrl, usedProxyRef || proxyRef, key);
 
     res.json({
       success: true,

@@ -59,6 +59,7 @@ export default async function proxy(req: Request, res: Response) {
     const host = req.get('host') || "";
     const protocol = req.protocol;
     const proxyBase = `${protocol}://${host}/api/v1/proxy?url=`;
+    const proxyCsrf = (req.query.x_csrf as string | undefined)?.trim() || "";
 
     // 0. Safety Valve: Smart Passthrough for Fragile Audio Providers (via Tor)
     // If we detect lizer123 or similar audio hosts, we turn off all "smart" features and use Tor
@@ -110,6 +111,7 @@ export default async function proxy(req: Request, res: Response) {
                 const baseUrl = finalUrl.substring(0, finalUrl.lastIndexOf('/') + 1);
                 // Self-reference as referer for segments
                 const refParam = `&proxy_ref=${encodeURIComponent(finalUrl)}`;
+                const csrfParam = proxyCsrf ? `&x_csrf=${encodeURIComponent(proxyCsrf)}` : "";
 
                 const rewrittenLines = content.split('\n').map((line: string) => {
                     const trimmed = line.trim();
@@ -119,7 +121,7 @@ export default async function proxy(req: Request, res: Response) {
 
                     // Rewrite segment/playlist URL
                     const absUrl = trimmed.startsWith('http') ? trimmed : new URL(trimmed, baseUrl).href;
-                    return `${proxyBase}${encodeURIComponent(absUrl)}${refParam}`;
+                    return `${proxyBase}${encodeURIComponent(absUrl)}${refParam}${csrfParam}`;
                 });
 
                 res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
@@ -233,7 +235,8 @@ export default async function proxy(req: Request, res: Response) {
                 "Sec-Fetch-Site": "cross-site",
                 "DNT": "1",
                 "Pragma": "no-cache",
-                "Cache-Control": "no-cache"
+                "Cache-Control": "no-cache",
+                ...(proxyCsrf ? { "X-Csrf-Token": proxyCsrf } : {})
             };
         };
 
@@ -325,6 +328,7 @@ export default async function proxy(req: Request, res: Response) {
             // Sustain the referer through recursive quality tracks and segments
             const stickyRef = proxyRef || targetUrl;
             const refParam = `&proxy_ref=${encodeURIComponent(stickyRef)}`;
+            const csrfParam = proxyCsrf ? `&x_csrf=${encodeURIComponent(proxyCsrf)}` : "";
 
             const rewrittenLines = content.split('\n').map(line => {
                 const trimmed = line.trim();
@@ -334,7 +338,7 @@ export default async function proxy(req: Request, res: Response) {
                 if (trimmed.includes('URI="')) {
                     return trimmed.replace(/URI="([^"]+)"/g, (match, relUrl) => {
                         const absUrl = relUrl.startsWith('http') ? relUrl : new URL(relUrl, baseUrl).href;
-                        return `URI="${proxyBase}${encodeURIComponent(absUrl)}${refParam}"`;
+                        return `URI="${proxyBase}${encodeURIComponent(absUrl)}${refParam}${csrfParam}"`;
                     });
                 }
 
@@ -342,7 +346,7 @@ export default async function proxy(req: Request, res: Response) {
                 // CRITICAL: Filter out garbage lines like "7" or non-file lines
                 if (!trimmed.startsWith('#') && (trimmed.includes('/') || trimmed.includes('.ts') || trimmed.includes('.m3u8') || trimmed.length > 5)) {
                     const absUrl = trimmed.startsWith('http') ? trimmed : new URL(trimmed, baseUrl).href;
-                    return `${proxyBase}${encodeURIComponent(absUrl)}${refParam}`;
+                    return `${proxyBase}${encodeURIComponent(absUrl)}${refParam}${csrfParam}`;
                 }
 
                 return line;
