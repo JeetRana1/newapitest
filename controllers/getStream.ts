@@ -47,6 +47,19 @@ function toAbsoluteStreamUrl(value: unknown, baseDomain: string): string {
   return "";
 }
 
+async function fetchUpstreamUrl(url: string, headers: Record<string, string>) {
+  try {
+    return await axios.get(url, { headers, timeout: 9000 });
+  } catch {
+    return await axios.get(url, {
+      headers,
+      httpAgent: torAgent,
+      httpsAgent: torAgent,
+      timeout: 13000
+    });
+  }
+}
+
 export default async function getStream(req: Request, res: Response) {
   const { file, key } = req.body;
 
@@ -104,24 +117,27 @@ export default async function getStream(req: Request, res: Response) {
           tokenVariants.flatMap((value) => {
             const encoded = encodeURIComponent(value);
             return [
+              `${baseDomain}/playlist/${value}.txt`,
               `${baseDomain}/playlist/${encoded}.txt`,
+              `${baseDomain}/playlist/${value}`,
               `${baseDomain}/playlist/${encoded}`,
-              `${baseDomain}/stream/${encoded}`,
               `${baseDomain}/stream/${value}`,
+              `${baseDomain}/stream/${encoded}`,
+              `${baseDomain}/stream/${encoded}?key=${encodeURIComponent(key)}`,
+              `${baseDomain}/stream/${value}?key=${encodeURIComponent(key)}`,
             ];
           })
         ));
 
         console.log(`[getStream] Mirroring from: ${baseDomain}`);
-        const requestConfig = {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            "Referer": baseDomain + "/",
-            "Origin": baseDomain,
-            "X-Csrf-Token": key,
-            "x-csrf-token": key
-          },
-          timeout: 8000,
+        const baseHeaders: Record<string, string> = {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+          "Referer": baseDomain + "/",
+          "Origin": baseDomain,
+          "X-Csrf-Token": key,
+          "x-csrf-token": key,
+          "X-Requested-With": "XMLHttpRequest",
+          "Accept": "*/*"
         };
 
         const errors: string[] = [];
@@ -129,25 +145,36 @@ export default async function getStream(req: Request, res: Response) {
         for (const url of candidateUrls) {
           let response;
           try {
-            response = await axios.get(url, requestConfig);
-          } catch {
-            try {
-              response = await axios.get(url, {
-                ...requestConfig,
-                httpAgent: torAgent,
-                httpsAgent: torAgent,
-                timeout: 12000,
-              });
-            } catch (err: any) {
-              errors.push(`${url} -> ${err?.message || "failed"}`);
-              continue;
-            }
+            response = await fetchUpstreamUrl(url, baseHeaders);
+          } catch (err: any) {
+            errors.push(`${url} -> ${err?.message || "failed"}`);
+            continue;
           }
 
           const resolved = toAbsoluteStreamUrl(response?.data, baseDomain);
           if (resolved.startsWith("http")) {
             finalStreamUrl = resolved;
             break;
+          }
+
+          // Some mirrors return JSON or raw token without absolute URL.
+          // Try deriving a stream URL if we got a non-http token-like response.
+          if (typeof response?.data === "string") {
+            const body = response.data.trim();
+            if (body && !body.startsWith("{") && !body.includes("<html")) {
+              const bodyClean = body.startsWith("~") ? body.slice(1) : body;
+              const derived = `${baseDomain}/stream/${encodeURIComponent(bodyClean)}?key=${encodeURIComponent(key)}`;
+              try {
+                const verifyRes = await fetchUpstreamUrl(derived, baseHeaders);
+                const verified = toAbsoluteStreamUrl(verifyRes?.data, baseDomain);
+                if (verified.startsWith("http")) {
+                  finalStreamUrl = verified;
+                  break;
+                }
+              } catch {
+                // Continue to next candidate.
+              }
+            }
           }
 
           errors.push(`${url} -> invalid response`);
