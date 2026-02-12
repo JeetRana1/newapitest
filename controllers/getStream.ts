@@ -7,6 +7,25 @@ import cache from "../lib/cache";
 const torAgent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
 const STREAM_CACHE_TTL_MS = 10 * 60 * 1000;
 
+function toAbsoluteStreamUrl(value: unknown, baseDomain: string): string {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.startsWith("http")) return trimmed;
+    if (trimmed.startsWith("/")) return `${baseDomain}${trimmed}`;
+    if (trimmed.startsWith("stream/") || trimmed.startsWith("stream2/")) {
+      return `${baseDomain}/${trimmed}`;
+    }
+  }
+
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const nested = obj.link || obj.url || obj.file || obj.stream || obj.data;
+    if (nested) return toAbsoluteStreamUrl(nested, baseDomain);
+  }
+
+  return "";
+}
+
 export default async function getStream(req: Request, res: Response) {
   const { file, key } = req.body;
 
@@ -55,39 +74,68 @@ export default async function getStream(req: Request, res: Response) {
           refererHint = proxyRef;
         }
       } else {
-      // New logic: fetch token from mirror
+        // Resolve token from mirror with multiple path variants.
         const baseDomain = (proxyRef && proxyRef !== '' ? proxyRef : await getPlayerUrl()).replace(/\/$/, '');
         refererHint = `${baseDomain}/`;
-        const path = token.startsWith('~') ? token.slice(1) : token;
-        const encodedPath = encodeURIComponent(path);
-        const playlistUrl = `${baseDomain}/playlist/${encodedPath}.txt`;
+        const normalized = token.startsWith('~') ? token.slice(1) : token;
+        const tokenVariants = Array.from(new Set([normalized, `~${normalized}`]));
+        const candidateUrls = Array.from(new Set(
+          tokenVariants.flatMap((value) => {
+            const encoded = encodeURIComponent(value);
+            return [
+              `${baseDomain}/playlist/${encoded}.txt`,
+              `${baseDomain}/playlist/${encoded}`,
+              `${baseDomain}/stream/${encoded}`,
+              `${baseDomain}/stream/${value}`,
+            ];
+          })
+        ));
 
         console.log(`[getStream] Mirroring from: ${baseDomain}`);
         const requestConfig = {
           headers: {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
             "Referer": baseDomain + "/",
-            "X-Csrf-Token": key
+            "Origin": baseDomain,
+            "X-Csrf-Token": key,
+            "x-csrf-token": key
           },
           timeout: 8000,
         };
 
-        let response;
-        try {
-          response = await axios.get(playlistUrl, requestConfig);
-        } catch {
-          response = await axios.get(playlistUrl, {
-            ...requestConfig,
-            httpAgent: torAgent,
-            httpsAgent: torAgent,
-            timeout: 12000,
-          });
-        }
+        const errors: string[] = [];
 
-        finalStreamUrl = response.data;
+        for (const url of candidateUrls) {
+          let response;
+          try {
+            response = await axios.get(url, requestConfig);
+          } catch {
+            try {
+              response = await axios.get(url, {
+                ...requestConfig,
+                httpAgent: torAgent,
+                httpsAgent: torAgent,
+                timeout: 12000,
+              });
+            } catch (err: any) {
+              errors.push(`${url} -> ${err?.message || "failed"}`);
+              continue;
+            }
+          }
+
+          const resolved = toAbsoluteStreamUrl(response?.data, baseDomain);
+          if (resolved.startsWith("http")) {
+            finalStreamUrl = resolved;
+            break;
+          }
+
+          errors.push(`${url} -> invalid response`);
+        }
 
         if (typeof finalStreamUrl === "string" && finalStreamUrl.startsWith("http")) {
           cache.set(streamCacheKey, finalStreamUrl, STREAM_CACHE_TTL_MS);
+        } else {
+          throw new Error(`Unable to resolve stream URL. Tried ${candidateUrls.length} candidates. Last: ${errors[errors.length - 1] || "none"}`);
         }
       }
     }
