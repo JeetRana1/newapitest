@@ -28,6 +28,17 @@ function getTtlFromStreamUrl(url: string): number {
   }
 }
 
+function normalizeOpaqueValue(value: string): string {
+  try {
+    value = decodeURIComponent(value);
+  } catch {
+    // Keep raw value if it is not URI-encoded.
+  }
+
+  // Some clients/providers may turn "+" into spaces in transit.
+  return value.replace(/ /g, "+").trim();
+}
+
 function toAbsoluteStreamUrl(value: unknown, baseDomain: string): string {
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -45,6 +56,55 @@ function toAbsoluteStreamUrl(value: unknown, baseDomain: string): string {
   }
 
   return "";
+}
+
+function isManifestText(data: unknown, contentType?: string): boolean {
+  if (typeof data !== "string") return false;
+  const text = data.trim();
+  if (!text) return false;
+
+  if (text.startsWith("#EXTM3U")) return true;
+
+  const ct = (contentType || "").toLowerCase();
+  return (ct.includes("mpegurl") || ct.includes("vnd.apple.mpegurl")) && text.includes("#EXT");
+}
+
+function buildCandidateUrls(baseDomain: string, token: string, key: string): string[] {
+  const normalized = token.startsWith("~") ? token.slice(1) : token;
+  const tokenVariants = Array.from(new Set([normalized, `~${normalized}`]));
+  const keyVariants = Array.from(new Set([
+    key,
+    key.replace(/\$/g, "")
+  ])).filter(Boolean);
+
+  return Array.from(new Set(
+    tokenVariants.flatMap((value) => {
+      const encoded = encodeURIComponent(value);
+      const paths = [
+        `${baseDomain}/playlist/${value}.txt`,
+        `${baseDomain}/playlist/${encoded}.txt`,
+        `${baseDomain}/playlist/${value}`,
+        `${baseDomain}/playlist/${encoded}`,
+        `${baseDomain}/stream/${value}`,
+        `${baseDomain}/stream/${encoded}`,
+        `${baseDomain}/stream2/${value}`,
+        `${baseDomain}/stream2/${encoded}`,
+      ];
+
+      const withKey = keyVariants.flatMap((k) => [
+        `${baseDomain}/stream/${value}?key=${encodeURIComponent(k)}`,
+        `${baseDomain}/stream/${encoded}?key=${encodeURIComponent(k)}`,
+        `${baseDomain}/stream/${value}?key=${k}`,
+        `${baseDomain}/stream/${encoded}?key=${k}`,
+        `${baseDomain}/stream2/${value}?key=${encodeURIComponent(k)}`,
+        `${baseDomain}/stream2/${encoded}?key=${encodeURIComponent(k)}`,
+        `${baseDomain}/stream2/${value}?key=${k}`,
+        `${baseDomain}/stream2/${encoded}?key=${k}`,
+      ]);
+
+      return [...paths, ...withKey];
+    })
+  ));
 }
 
 async function fetchUpstreamUrl(url: string, headers: Record<string, string>) {
@@ -69,14 +129,8 @@ export default async function getStream(req: Request, res: Response) {
 
   try {
     let finalStreamUrl = "";
-    let token = file as string;
-    try {
-      token = decodeURIComponent(token);
-    } catch {
-      // Keep raw token if it is not URI-encoded.
-    }
-    // Some clients/providers may turn "+" into spaces in transit.
-    token = token.replace(/ /g, "+");
+    const normalizedKey = normalizeOpaqueValue(String(key));
+    let token = normalizeOpaqueValue(String(file));
     let proxyRef = "";
     let refererHint = "";
 
@@ -100,7 +154,7 @@ export default async function getStream(req: Request, res: Response) {
         }
       }
     } else {
-      const streamCacheKey = `stream_url_${token}_${proxyRef || "none"}`;
+      const streamCacheKey = `stream_url_${token}_${normalizedKey}_${proxyRef || "none"}`;
       const cachedStreamUrl = cache.get(streamCacheKey);
       if (cachedStreamUrl) {
         finalStreamUrl = cachedStreamUrl;
@@ -111,31 +165,15 @@ export default async function getStream(req: Request, res: Response) {
         // Resolve token from mirror with multiple path variants.
         const baseDomain = (proxyRef && proxyRef !== '' ? proxyRef : await getPlayerUrl()).replace(/\/$/, '');
         refererHint = `${baseDomain}/`;
-        const normalized = token.startsWith('~') ? token.slice(1) : token;
-        const tokenVariants = Array.from(new Set([normalized, `~${normalized}`]));
-        const candidateUrls = Array.from(new Set(
-          tokenVariants.flatMap((value) => {
-            const encoded = encodeURIComponent(value);
-            return [
-              `${baseDomain}/playlist/${value}.txt`,
-              `${baseDomain}/playlist/${encoded}.txt`,
-              `${baseDomain}/playlist/${value}`,
-              `${baseDomain}/playlist/${encoded}`,
-              `${baseDomain}/stream/${value}`,
-              `${baseDomain}/stream/${encoded}`,
-              `${baseDomain}/stream/${encoded}?key=${encodeURIComponent(key)}`,
-              `${baseDomain}/stream/${value}?key=${encodeURIComponent(key)}`,
-            ];
-          })
-        ));
+        const candidateUrls = buildCandidateUrls(baseDomain, token, normalizedKey);
 
         console.log(`[getStream] Mirroring from: ${baseDomain}`);
         const baseHeaders: Record<string, string> = {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
           "Referer": baseDomain + "/",
           "Origin": baseDomain,
-          "X-Csrf-Token": key,
-          "x-csrf-token": key,
+          "X-Csrf-Token": normalizedKey,
+          "x-csrf-token": normalizedKey,
           "X-Requested-With": "XMLHttpRequest",
           "Accept": "*/*"
         };
@@ -151,28 +189,50 @@ export default async function getStream(req: Request, res: Response) {
             continue;
           }
 
+          const contentType = String(response?.headers?.["content-type"] || "");
           const resolved = toAbsoluteStreamUrl(response?.data, baseDomain);
           if (resolved.startsWith("http")) {
             finalStreamUrl = resolved;
             break;
           }
 
+          // Some mirrors return manifest content directly at candidate URL.
+          if (isManifestText(response?.data, contentType)) {
+            finalStreamUrl = url;
+            break;
+          }
+
           // Some mirrors return JSON or raw token without absolute URL.
-          // Try deriving a stream URL if we got a non-http token-like response.
+          // Try deriving stream URLs if we got a non-http token-like response.
           if (typeof response?.data === "string") {
             const body = response.data.trim();
             if (body && !body.startsWith("{") && !body.includes("<html")) {
               const bodyClean = body.startsWith("~") ? body.slice(1) : body;
-              const derived = `${baseDomain}/stream/${encodeURIComponent(bodyClean)}?key=${encodeURIComponent(key)}`;
-              try {
-                const verifyRes = await fetchUpstreamUrl(derived, baseHeaders);
-                const verified = toAbsoluteStreamUrl(verifyRes?.data, baseDomain);
-                if (verified.startsWith("http")) {
-                  finalStreamUrl = verified;
-                  break;
+              const derivedCandidates = [
+                `${baseDomain}/stream/${encodeURIComponent(bodyClean)}?key=${encodeURIComponent(normalizedKey)}`,
+                `${baseDomain}/stream2/${encodeURIComponent(bodyClean)}?key=${encodeURIComponent(normalizedKey)}`
+              ];
+
+              for (const derived of derivedCandidates) {
+                try {
+                  const verifyRes = await fetchUpstreamUrl(derived, baseHeaders);
+                  const verifyContentType = String(verifyRes?.headers?.["content-type"] || "");
+                  const verified = toAbsoluteStreamUrl(verifyRes?.data, baseDomain);
+                  if (verified.startsWith("http")) {
+                    finalStreamUrl = verified;
+                    break;
+                  }
+                  if (isManifestText(verifyRes?.data, verifyContentType)) {
+                    finalStreamUrl = derived;
+                    break;
+                  }
+                } catch {
+                  // Continue to next candidate.
                 }
-              } catch {
-                // Continue to next candidate.
+              }
+
+              if (finalStreamUrl) {
+                break;
               }
             }
           }
