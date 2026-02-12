@@ -92,3 +92,44 @@ export async function resolveTmdbToImdb(id: string, type: 'movie' | 'tv' = 'movi
         return id;
     }
 }
+
+/**
+ * Converts IMDB IDs (tt...) to TMDB IDs when upstream providers stop accepting imdb paths.
+ */
+export async function resolveImdbToTmdb(imdbId: string, type: 'movie' | 'tv' = 'movie'): Promise<string> {
+    if (!imdbId.startsWith('tt')) return imdbId;
+
+    const cacheKey = `imdb_to_tmdb_${type}_${imdbId}`;
+    const cachedResult = cache.get(cacheKey);
+    if (cachedResult) {
+        console.log(`[TMDB Resolver] Returning cached TMDB result for ${imdbId} -> ${cachedResult}`);
+        return cachedResult;
+    }
+
+    try {
+        const apiKey = process.env.TMDB_API_KEY || 'eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI4YmVjZTUzZGE1NjM4MjA5M2QwMjMwYzA1Zjg4YzlhMCIsInN1YiI6IjY1NmM0MjcxNjVmMzQzMDE0MzRhMzdhNSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.jV5CJmGBbqN2J5o2M9Q49s5Q7jY7Q7Q7Q7Q7Q7Q7Q7Q';
+        const url = `https://api.themoviedb.org/3/find/${imdbId}?api_key=${apiKey}&external_source=imdb_id`;
+        const response = await axios.get(url, {
+            headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+            },
+            timeout: 10000
+        });
+
+        const data = response.data || {};
+        const movieResult = Array.isArray(data.movie_results) ? data.movie_results[0] : null;
+        const tvResult = Array.isArray(data.tv_results) ? data.tv_results[0] : null;
+        const chosen = type === 'tv' ? (tvResult || movieResult) : (movieResult || tvResult);
+        const tmdbId = chosen?.id ? String(chosen.id) : "";
+
+        if (tmdbId) {
+            console.log(`[TMDB Resolver] Successfully converted ${imdbId} -> ${tmdbId}`);
+            cache.set(cacheKey, tmdbId, 24 * 60 * 60 * 1000);
+            return tmdbId;
+        }
+    } catch (e: any) {
+        console.log(`[TMDB Resolver] IMDB->TMDB conversion failed: ${e.message}`);
+    }
+
+    return imdbId;
+}

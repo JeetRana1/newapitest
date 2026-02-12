@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import getInfo from "../lib/getInfo";
-import { resolveTmdbToImdb } from "../lib/tmdbResolver";
+import { resolveImdbToTmdb, resolveTmdbToImdb } from "../lib/tmdbResolver";
 import cache from "../lib/cache";
 
 export default async function mediaInfo(req: Request, res: Response) {
@@ -29,7 +29,18 @@ export default async function mediaInfo(req: Request, res: Response) {
     }
 
     console.log(`Received request for ID: ${id} (Resolved: ${finalId})`);
-    const data = await getInfo(finalId);
+    let data = await getInfo(finalId);
+
+    // Upstream providers sometimes stop supporting imdb IDs on /play/*.
+    // If imdb lookup fails, retry once using TMDB numeric ID.
+    if (!data.success && finalId.startsWith('tt')) {
+      const tmdbFallbackId = await resolveImdbToTmdb(finalId, (type as any) || 'movie');
+      if (tmdbFallbackId && tmdbFallbackId !== finalId) {
+        console.log(`[mediaInfo] IMDb lookup failed. Retrying with TMDB ID: ${tmdbFallbackId}`);
+        data = await getInfo(tmdbFallbackId);
+      }
+    }
+
     console.log(`Response data:`, data);
     
     // Cache the result if successful
