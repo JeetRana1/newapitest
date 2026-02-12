@@ -286,15 +286,21 @@ export default async function proxy(req: Request, res: Response) {
                                             : Buffer.from(manifestRes.data || "").toString("utf-8");
 
                                         const base = proxyRef.substring(0, proxyRef.lastIndexOf('/') + 1);
-                                        const refreshedLine = manifestText
+                                        const manifestLines = manifestText
                                             .split('\n')
                                             .map((l: string) => l.trim())
-                                            .find((l: string) => l && !l.startsWith('#') && l.includes(segmentName));
+                                            .filter((l: string) => l && !l.startsWith('#'));
 
-                                        if (refreshedLine) {
-                                            targetUrl = refreshedLine.startsWith('http')
-                                                ? refreshedLine
-                                                : new URL(refreshedLine, base).href;
+                                        const exactLine = manifestLines.find((l: string) => l.includes(segmentName));
+                                        const latestLine = [...manifestLines].reverse().find((l: string) =>
+                                            l.includes('.ts') || l.includes('.m4s') || l.includes('segment')
+                                        );
+                                        const chosenLine = exactLine || latestLine;
+
+                                        if (chosenLine) {
+                                            targetUrl = chosenLine.startsWith('http')
+                                                ? chosenLine
+                                                : new URL(chosenLine, base).href;
                                             response = await tryFetch(true, proxyRef);
                                         } else {
                                             throw lastErr;
