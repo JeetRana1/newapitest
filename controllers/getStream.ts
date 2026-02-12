@@ -160,6 +160,12 @@ export default async function getStream(req: Request, res: Response) {
         finalStreamUrl = cachedStreamUrl;
         if (proxyRef) {
           refererHint = proxyRef;
+        } else {
+          try {
+            refererHint = `${new URL(String(cachedStreamUrl)).origin}/`;
+          } catch {
+            refererHint = "";
+          }
         }
       } else {
         // Resolve token from mirror with multiple path variants.

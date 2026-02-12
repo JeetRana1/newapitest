@@ -35,6 +35,16 @@ function getJarCookie(proxyRef: string | undefined): string {
     return "";
 }
 
+function shouldPreferTor(url: string): boolean {
+    const lower = url.toLowerCase();
+    return (
+        lower.includes("heast404jax.com") ||
+        lower.includes("i-arch-") ||
+        lower.includes("/stream2/") ||
+        lower.includes("i-cdn-")
+    );
+}
+
 /**
  * Proxy controller optimized for stability and reliability.
  * Reverted to pure-Tor for data integrity while keeping HLS rewriting.
@@ -207,12 +217,13 @@ export default async function proxy(req: Request, res: Response) {
         };
 
         const tryFetch = async (useTor: boolean, refererOverride?: string) => {
+            const manifestTimeoutMs = useTor ? 15000 : 5000;
             return await axios.get(targetUrl, {
                 headers: getProxyHeaders(targetUrl, refererOverride),
                 httpAgent: useTor ? torAgent : undefined,
                 httpsAgent: useTor ? torAgent : undefined,
                 responseType: isM3U8 ? 'text' : 'stream',
-                timeout: isSegment ? 20000 : 25000,
+                timeout: isSegment ? 20000 : manifestTimeoutMs,
                 maxRedirects: 5,
                 validateStatus: (status) => status < 400 // Only count 2xx/3xx as success
             });
@@ -222,17 +233,20 @@ export default async function proxy(req: Request, res: Response) {
         try {
             // Priority for segments: Try Direct FIRST for speed, then Tor Fallback
             // But if we detect a 403 (Block), we fail-fast to Tor to save time
+            const preferTor = shouldPreferTor(targetUrl);
             if (isSegment) {
                 try {
-                    // Try Direct First
-                    response = await tryFetch(false);
+                    response = await tryFetch(preferTor);
                 } catch (e: any) {
                     // If blocked (403), immediately switch to Tor
                     if (e.message.includes('403') || e.message.includes('401')) {
                         console.log(`[Proxy Adaptive] Direct blocked (${e.message}). Switching to Tor lane...`);
                     }
                     try {
-                        response = await tryFetch(true);
+                        response = await tryFetch(!preferTor);
+                        if (!response) {
+                            response = await tryFetch(true);
+                        }
                     } catch (torErr: any) {
                         // Retry with alternate referers for strict CDN anti-hotlinking.
                         const fallbackReferers = Array.from(new Set([
@@ -318,12 +332,23 @@ export default async function proxy(req: Request, res: Response) {
                     }
                 }
             } else {
-                // Manifests also try direct first for faster startup, then fallback to Tor.
-                try {
-                    response = await tryFetch(false);
-                } catch (e) {
-                    console.log(`[Proxy Fallback] Direct failed for manifest. Trying Tor...`);
-                    response = await tryFetch(true);
+                // For known anti-bot hosts, Tor-first is faster and avoids manifest timeout loops.
+                if (preferTor) {
+                    try {
+                        response = await tryFetch(true);
+                    } catch (e) {
+                        console.log(`[Proxy Fallback] Tor failed for manifest. Trying direct...`);
+                        response = await tryFetch(false);
+                    }
+                    // eslint-disable-next-line no-lonely-if
+                } else {
+                    // Manifests also try direct first for faster startup, then fallback to Tor.
+                    try {
+                        response = await tryFetch(false);
+                    } catch (e) {
+                        console.log(`[Proxy Fallback] Direct failed for manifest. Trying Tor...`);
+                        response = await tryFetch(true);
+                    }
                 }
             }
         } catch (finalErr: any) {
