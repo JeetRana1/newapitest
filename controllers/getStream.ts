@@ -120,6 +120,83 @@ async function fetchUpstreamUrl(url: string, headers: Record<string, string>) {
   }
 }
 
+async function isCachedStreamStillValid(streamUrl: string, refererHint: string): Promise<boolean> {
+  try {
+    const parsed = new URL(streamUrl);
+    const expiresRaw = parsed.searchParams.get("expires");
+    if (expiresRaw) {
+      const expiresUnix = Number(expiresRaw);
+      if (Number.isFinite(expiresUnix) && expiresUnix > 0) {
+        const remainingMs = (expiresUnix * 1000) - Date.now();
+        // If it is about to expire, force refresh now instead of returning a soon-dead URL.
+        if (remainingMs < 2 * 60 * 1000) return false;
+      }
+    }
+  } catch {
+    // Ignore parse failures and continue with active probe.
+  }
+
+  const defaultReferer = (() => {
+    if (refererHint) return refererHint;
+    try {
+      return `${new URL(streamUrl).origin}/`;
+    } catch {
+      return "";
+    }
+  })();
+
+  const defaultOrigin = (() => {
+    try {
+      return new URL(defaultReferer).origin;
+    } catch {
+      return "";
+    }
+  })();
+
+  const probeHeaders: Record<string, string> = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    "Accept": "*/*",
+    ...(defaultReferer ? { "Referer": defaultReferer } : {}),
+    ...(defaultOrigin ? { "Origin": defaultOrigin } : {})
+  };
+
+  const isProbeValid = (status: number, contentType: string, body: unknown) => {
+    if (status >= 400) return false;
+    const ct = (contentType || "").toLowerCase();
+    if (ct.includes("mpegurl")) return true;
+    if (typeof body === "string" && body.includes("#EXTM3U")) return true;
+    return false;
+  };
+
+  try {
+    const direct = await axios.get(streamUrl, {
+      headers: probeHeaders,
+      timeout: 5000,
+      responseType: "text",
+      validateStatus: () => true
+    });
+    if (isProbeValid(direct.status, String(direct.headers?.["content-type"] || ""), direct.data)) {
+      return true;
+    }
+  } catch {
+    // Try Tor as fallback for strict hosts.
+  }
+
+  try {
+    const tor = await axios.get(streamUrl, {
+      headers: probeHeaders,
+      httpAgent: torAgent,
+      httpsAgent: torAgent,
+      timeout: 7000,
+      responseType: "text",
+      validateStatus: () => true
+    });
+    return isProbeValid(tor.status, String(tor.headers?.["content-type"] || ""), tor.data);
+  } catch {
+    return false;
+  }
+}
+
 export default async function getStream(req: Request, res: Response) {
   const { file, key } = req.body;
 
@@ -156,6 +233,7 @@ export default async function getStream(req: Request, res: Response) {
     } else {
       const streamCacheKey = `stream_url_${token}_${normalizedKey}_${proxyRef || "none"}`;
       const cachedStreamUrl = cache.get(streamCacheKey);
+      let canUseCached = false;
       if (cachedStreamUrl) {
         finalStreamUrl = cachedStreamUrl;
         if (proxyRef) {
@@ -167,7 +245,15 @@ export default async function getStream(req: Request, res: Response) {
             refererHint = "";
           }
         }
-      } else {
+
+        canUseCached = await isCachedStreamStillValid(finalStreamUrl, refererHint);
+        if (!canUseCached) {
+          cache.delete(streamCacheKey);
+          finalStreamUrl = "";
+        }
+      }
+
+      if (!canUseCached) {
         // Resolve token from mirror with multiple path variants.
         const baseDomain = (proxyRef && proxyRef !== '' ? proxyRef : await getPlayerUrl()).replace(/\/$/, '');
         refererHint = `${baseDomain}/`;

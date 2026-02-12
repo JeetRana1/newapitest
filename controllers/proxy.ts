@@ -6,6 +6,8 @@ import { getPlayerUrl } from "../lib/getPlayerUrl";
 const torAgent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
 const manifestCookieJar = new Map<string, { cookie: string; timestamp: number }>();
 const MANIFEST_COOKIE_TTL_MS = 30 * 60 * 1000;
+const manifestResponseCache = new Map<string, { body: string; expiresAt: number }>();
+const MANIFEST_CACHE_TTL_MS = 8000;
 
 function extractCookieHeader(setCookieHeader: string[] | undefined): string {
     if (!setCookieHeader || !setCookieHeader.length) return "";
@@ -152,6 +154,20 @@ export default async function proxy(req: Request, res: Response) {
         // 2. Identify file types and generate smart headers
         const isM3U8 = targetUrl.includes('.m3u8') || targetUrl.includes('.txt');
         isSegment = targetUrl.includes('.ts') || targetUrl.includes('.mp4');
+        const manifestCacheKey = `${targetUrl}|${String(req.query.proxy_ref || "")}`;
+
+        // Fast-path cached rewritten manifest to reduce repeated upstream fetches.
+        if (isM3U8) {
+            const cachedManifest = manifestResponseCache.get(manifestCacheKey);
+            if (cachedManifest && cachedManifest.expiresAt > Date.now()) {
+                res.setHeader("Access-Control-Allow-Origin", "*");
+                res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS, POST");
+                res.setHeader("Access-Control-Allow-Headers", "*");
+                res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+                res.setHeader("Cache-Control", "public, max-age=6");
+                return res.send(cachedManifest.body);
+            }
+        }
 
         const getProxyHeaders = (url: string, refererOverride?: string) => {
             const uri = new URL(url);
@@ -236,17 +252,15 @@ export default async function proxy(req: Request, res: Response) {
             const preferTor = shouldPreferTor(targetUrl);
             if (isSegment) {
                 try {
-                    response = await tryFetch(preferTor);
+                    // Segments should stay direct-first for throughput; Tor fallback only if needed.
+                    response = await tryFetch(false);
                 } catch (e: any) {
                     // If blocked (403), immediately switch to Tor
                     if (e.message.includes('403') || e.message.includes('401')) {
                         console.log(`[Proxy Adaptive] Direct blocked (${e.message}). Switching to Tor lane...`);
                     }
                     try {
-                        response = await tryFetch(!preferTor);
-                        if (!response) {
-                            response = await tryFetch(true);
-                        }
+                        response = await tryFetch(true);
                     } catch (torErr: any) {
                         // Retry with alternate referers for strict CDN anti-hotlinking.
                         const fallbackReferers = Array.from(new Set([
@@ -389,6 +403,7 @@ export default async function proxy(req: Request, res: Response) {
             }
 
             res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+            res.setHeader("Cache-Control", "public, max-age=6");
             const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
             const setCookieHeader = response.headers["set-cookie"] as string[] | undefined;
             const cookieHeader = extractCookieHeader(setCookieHeader);
@@ -425,11 +440,19 @@ export default async function proxy(req: Request, res: Response) {
                 return line;
             });
 
-            return res.send(rewrittenLines.join('\n'));
+            const rewrittenManifest = rewrittenLines.join('\n');
+            manifestResponseCache.set(manifestCacheKey, {
+                body: rewrittenManifest,
+                expiresAt: Date.now() + MANIFEST_CACHE_TTL_MS
+            });
+            return res.send(rewrittenManifest);
         }
 
         // 4. Handle Binary/Segment Data (Piping)
         res.setHeader("Content-Type", contentType || (isSegment ? "video/mp2t" : "application/octet-stream"));
+        if (isSegment) {
+            res.setHeader("Cache-Control", "public, max-age=60");
+        }
 
         // Ensure accurate content length if provided
         if (response.headers["content-length"]) {
