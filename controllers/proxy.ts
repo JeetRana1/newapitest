@@ -135,7 +135,14 @@ export default async function proxy(req: Request, res: Response) {
             } else {
                 // Trust explicit upstream hint from getStream/manifest rewriting.
                 try {
-                    referer = new URL(proxyRef).href;
+                    const proxyRefUrl = new URL(proxyRef);
+                    // For cross-host segment fetches, prefer segment host referer.
+                    // Some CDNs reject fragments when referer host doesn't match.
+                    if (isSegment && proxyRefUrl.hostname !== uri.hostname) {
+                        referer = `https://${uri.host}/`;
+                    } else {
+                        referer = proxyRefUrl.href;
+                    }
                 } catch (e) {
                     referer = `https://${uri.host}/`;
                 }
@@ -271,12 +278,14 @@ export default async function proxy(req: Request, res: Response) {
 
         response.data.pipe(res);
 
-    } catch (error: any) {
-        // Only log fatal errors for manifests (crucial for debugging)
-        // Silence segment errors as they are retried or handled by the player
-        if (!isSegment) {
-            console.error(`[Proxy Fatal] ${error.message} for ${targetUrl}`);
-        }
+        } catch (error: any) {
+            // Only log fatal errors for manifests (crucial for debugging)
+            // Silence segment errors as they are retried or handled by the player
+            if (!isSegment) {
+                console.error(`[Proxy Fatal] ${error.message} for ${targetUrl}`);
+            } else {
+                console.log(`[Proxy Segment Error] ${error.message} for ${targetUrl}`);
+            }
 
         if (!res.headersSent) {
             res.status(500).send("Proxy connectivity issues. Please try refreshing.");

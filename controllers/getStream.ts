@@ -6,6 +6,27 @@ import cache from "../lib/cache";
 
 const torAgent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
 const STREAM_CACHE_TTL_MS = 10 * 60 * 1000;
+const STREAM_CACHE_MAX_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const STREAM_CACHE_MIN_SAFE_TTL_MS = 60 * 1000;
+
+function getTtlFromStreamUrl(url: string): number {
+  try {
+    const parsed = new URL(url);
+    const expiresRaw = parsed.searchParams.get("expires");
+    if (!expiresRaw) return STREAM_CACHE_TTL_MS;
+
+    const expiresUnix = Number(expiresRaw);
+    if (!Number.isFinite(expiresUnix) || expiresUnix <= 0) return STREAM_CACHE_TTL_MS;
+
+    const safetyWindowMs = 5 * 60 * 1000;
+    const ttl = (expiresUnix * 1000) - Date.now() - safetyWindowMs;
+
+    if (ttl < STREAM_CACHE_MIN_SAFE_TTL_MS) return STREAM_CACHE_MIN_SAFE_TTL_MS;
+    return Math.min(ttl, STREAM_CACHE_MAX_TTL_MS);
+  } catch {
+    return STREAM_CACHE_TTL_MS;
+  }
+}
 
 function toAbsoluteStreamUrl(value: unknown, baseDomain: string): string {
   if (typeof value === "string") {
@@ -133,7 +154,8 @@ export default async function getStream(req: Request, res: Response) {
         }
 
         if (typeof finalStreamUrl === "string" && finalStreamUrl.startsWith("http")) {
-          cache.set(streamCacheKey, finalStreamUrl, STREAM_CACHE_TTL_MS);
+          const dynamicTtl = getTtlFromStreamUrl(finalStreamUrl);
+          cache.set(streamCacheKey, finalStreamUrl, dynamicTtl);
         } else {
           throw new Error(`Unable to resolve stream URL. Tried ${candidateUrls.length} candidates. Last: ${errors[errors.length - 1] || "none"}`);
         }

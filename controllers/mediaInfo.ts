@@ -45,7 +45,7 @@ export default async function mediaInfo(req: Request, res: Response) {
     
     // Cache the result if successful
     if (data.success) {
-      cache.set(cacheKey, data, 30 * 60 * 1000); // Cache successful results for 30 minutes
+      cache.set(cacheKey, data, 24 * 60 * 60 * 1000); // Cache successful results for 24 hours
     } else {
       // Cache failed results for shorter duration to allow retries
       cache.set(cacheKey, data, 5 * 60 * 1000); // Cache failed results for 5 minutes
