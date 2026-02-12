@@ -113,13 +113,13 @@ export default async function proxy(req: Request, res: Response) {
         const isM3U8 = targetUrl.includes('.m3u8') || targetUrl.includes('.txt');
         isSegment = targetUrl.includes('.ts') || targetUrl.includes('.mp4');
 
-        const getProxyHeaders = (url: string) => {
+        const getProxyHeaders = (url: string, refererOverride?: string) => {
             const uri = new URL(url);
             // Use the hint from the query param if available - MOST RELIABLE
             // This bypasses the need for the frontend to set tricky headers
-            let referer = proxyRef || "https://allmovieland.link/";
+            let referer = refererOverride || proxyRef || "https://allmovieland.link/";
 
-            if (!proxyRef) {
+            if (!refererOverride && !proxyRef) {
                 // Dynamic Referer Intelligence (Fallback only)
                 if (url.includes('slime') || url.includes('vekna')) {
                     referer = `https://${url.includes('slime') ? 'vekna402las.com' : uri.host}/`;
@@ -148,8 +148,13 @@ export default async function proxy(req: Request, res: Response) {
                 }
             }
 
-            if (!referer.endsWith('/')) referer += '/';
-            const origin = referer.replace(/\/$/, '');
+            let origin = `https://${uri.host}`;
+            try {
+                origin = new URL(referer).origin;
+            } catch {
+                if (!referer.endsWith('/')) referer += '/';
+                origin = referer.replace(/\/$/, '');
+            }
 
             return {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -168,13 +173,13 @@ export default async function proxy(req: Request, res: Response) {
             };
         };
 
-        const tryFetch = async (useTor: boolean) => {
+        const tryFetch = async (useTor: boolean, refererOverride?: string) => {
             return await axios.get(targetUrl, {
-                headers: getProxyHeaders(targetUrl),
+                headers: getProxyHeaders(targetUrl, refererOverride),
                 httpAgent: useTor ? torAgent : undefined,
                 httpsAgent: useTor ? torAgent : undefined,
                 responseType: isM3U8 ? 'text' : 'stream',
-                timeout: isSegment ? 15000 : 12000,
+                timeout: isSegment ? 20000 : 25000,
                 maxRedirects: 5,
                 validateStatus: (status) => status < 400 // Only count 2xx/3xx as success
             });
@@ -193,7 +198,29 @@ export default async function proxy(req: Request, res: Response) {
                     if (e.message.includes('403') || e.message.includes('401')) {
                         console.log(`[Proxy Adaptive] Direct blocked (${e.message}). Switching to Tor lane...`);
                     }
-                    response = await tryFetch(true);
+                    try {
+                        response = await tryFetch(true);
+                    } catch (torErr: any) {
+                        // Retry with alternate referers for strict CDN anti-hotlinking.
+                        const fallbackReferers = Array.from(new Set([
+                            proxyRef || "",
+                            targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1),
+                            `https://${new URL(targetUrl).host}/`
+                        ].filter(Boolean)));
+
+                        let lastErr: any = torErr;
+                        for (const ref of fallbackReferers) {
+                            try {
+                                response = await tryFetch(true, ref);
+                                lastErr = null;
+                                break;
+                            } catch (retryErr: any) {
+                                lastErr = retryErr;
+                            }
+                        }
+
+                        if (lastErr) throw lastErr;
+                    }
                 }
             } else {
                 // Manifests also try direct first for faster startup, then fallback to Tor.
@@ -206,6 +233,10 @@ export default async function proxy(req: Request, res: Response) {
             }
         } catch (finalErr: any) {
             throw finalErr;
+        }
+
+        if (!response) {
+            throw new Error("Proxy fetch failed: empty upstream response");
         }
 
         // Set permissive CORS
@@ -241,7 +272,8 @@ export default async function proxy(req: Request, res: Response) {
             const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
 
             // Sustain the referer through recursive quality tracks and segments
-            const refParam = proxyRef ? `&proxy_ref=${encodeURIComponent(proxyRef)}` : "";
+            // Pass the current manifest URL as parent referer for next-level requests.
+            const refParam = `&proxy_ref=${encodeURIComponent(targetUrl)}`;
 
             const rewrittenLines = content.split('\n').map(line => {
                 const trimmed = line.trim();
