@@ -4,6 +4,36 @@ import { SocksProxyAgent } from 'socks-proxy-agent';
 import { getPlayerUrl } from "../lib/getPlayerUrl";
 
 const torAgent = new SocksProxyAgent('socks5h://127.0.0.1:9050');
+const manifestCookieJar = new Map<string, { cookie: string; timestamp: number }>();
+const MANIFEST_COOKIE_TTL_MS = 30 * 60 * 1000;
+
+function extractCookieHeader(setCookieHeader: string[] | undefined): string {
+    if (!setCookieHeader || !setCookieHeader.length) return "";
+    return setCookieHeader
+        .map((raw) => raw.split(";")[0]?.trim())
+        .filter(Boolean)
+        .join("; ");
+}
+
+function getJarCookie(proxyRef: string | undefined): string {
+    if (!proxyRef) return "";
+
+    const now = Date.now();
+    const direct = manifestCookieJar.get(proxyRef);
+    if (direct && now - direct.timestamp <= MANIFEST_COOKIE_TTL_MS) {
+        return direct.cookie;
+    }
+
+    try {
+        const origin = new URL(proxyRef).origin;
+        const originCookie = manifestCookieJar.get(origin);
+        if (originCookie && now - originCookie.timestamp <= MANIFEST_COOKIE_TTL_MS) {
+            return originCookie.cookie;
+        }
+    } catch { }
+
+    return "";
+}
 
 /**
  * Proxy controller optimized for stability and reliability.
@@ -156,6 +186,8 @@ export default async function proxy(req: Request, res: Response) {
                 origin = referer.replace(/\/$/, '');
             }
 
+            const jarCookie = getJarCookie(proxyRef);
+
             return {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
                 "Referer": referer,
@@ -169,7 +201,8 @@ export default async function proxy(req: Request, res: Response) {
                 "DNT": "1",
                 "Pragma": "no-cache",
                 "Cache-Control": "no-cache",
-                "Host": uri.host
+                "Host": uri.host,
+                ...(jarCookie ? { "Cookie": jarCookie } : {})
             };
         };
 
@@ -219,7 +252,63 @@ export default async function proxy(req: Request, res: Response) {
                             }
                         }
 
-                        if (lastErr) throw lastErr;
+                        if (lastErr) {
+                            // Segment-specific rescue: refresh parent manifest and retry the same segment path.
+                            try {
+                                if (proxyRef) {
+                                    const segmentName = (() => {
+                                        try {
+                                            const p = new URL(targetUrl).pathname;
+                                            return p.substring(p.lastIndexOf('/') + 1);
+                                        } catch {
+                                            return "";
+                                        }
+                                    })();
+
+                                    if (segmentName) {
+                                        let manifestRes;
+                                        try {
+                                            manifestRes = await axios.get(proxyRef, {
+                                                headers: getProxyHeaders(proxyRef, proxyRef),
+                                                timeout: 12000
+                                            });
+                                        } catch {
+                                            manifestRes = await axios.get(proxyRef, {
+                                                headers: getProxyHeaders(proxyRef, proxyRef),
+                                                httpAgent: torAgent,
+                                                httpsAgent: torAgent,
+                                                timeout: 15000
+                                            });
+                                        }
+
+                                        const manifestText = typeof manifestRes.data === "string"
+                                            ? manifestRes.data
+                                            : Buffer.from(manifestRes.data || "").toString("utf-8");
+
+                                        const base = proxyRef.substring(0, proxyRef.lastIndexOf('/') + 1);
+                                        const refreshedLine = manifestText
+                                            .split('\n')
+                                            .map((l: string) => l.trim())
+                                            .find((l: string) => l && !l.startsWith('#') && l.includes(segmentName));
+
+                                        if (refreshedLine) {
+                                            targetUrl = refreshedLine.startsWith('http')
+                                                ? refreshedLine
+                                                : new URL(refreshedLine, base).href;
+                                            response = await tryFetch(true, proxyRef);
+                                        } else {
+                                            throw lastErr;
+                                        }
+                                    } else {
+                                        throw lastErr;
+                                    }
+                                } else {
+                                    throw lastErr;
+                                }
+                            } catch {
+                                throw lastErr;
+                            }
+                        }
                     }
                 }
             } else {
@@ -270,6 +359,14 @@ export default async function proxy(req: Request, res: Response) {
 
             res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
             const baseUrl = targetUrl.substring(0, targetUrl.lastIndexOf('/') + 1);
+            const setCookieHeader = response.headers["set-cookie"] as string[] | undefined;
+            const cookieHeader = extractCookieHeader(setCookieHeader);
+            if (cookieHeader) {
+                manifestCookieJar.set(targetUrl, { cookie: cookieHeader, timestamp: Date.now() });
+                try {
+                    manifestCookieJar.set(new URL(targetUrl).origin, { cookie: cookieHeader, timestamp: Date.now() });
+                } catch { }
+            }
 
             // Sustain the referer through recursive quality tracks and segments
             // Pass the current manifest URL as parent referer for next-level requests.
