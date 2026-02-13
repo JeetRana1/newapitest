@@ -3,6 +3,9 @@ import getInfo from "../lib/getInfo";
 import { resolveImdbToTmdb, resolveTmdbToImdb } from "../lib/tmdbResolver";
 import cache from "../lib/cache";
 
+const MEDIAINFO_SUCCESS_CACHE_TTL_MS = Number(process.env.MEDIAINFO_SUCCESS_CACHE_TTL_MS || 5 * 60 * 1000);
+const MEDIAINFO_FAILURE_CACHE_TTL_MS = Number(process.env.MEDIAINFO_FAILURE_CACHE_TTL_MS || 2 * 60 * 1000);
+
 export default async function mediaInfo(req: Request, res: Response) {
   let { id, type } = req.query;
   if (!id) {
@@ -43,12 +46,12 @@ export default async function mediaInfo(req: Request, res: Response) {
 
     console.log(`Response data:`, data);
     
-    // Cache the result if successful
+    // Cache success briefly: upstream file/key tokens are short-lived and become invalid.
     if (data.success) {
-      cache.set(cacheKey, data, 24 * 60 * 60 * 1000); // Cache successful results for 24 hours
+      cache.set(cacheKey, data, MEDIAINFO_SUCCESS_CACHE_TTL_MS);
     } else {
       // Cache failed results for shorter duration to allow retries
-      cache.set(cacheKey, data, 5 * 60 * 1000); // Cache failed results for 5 minutes
+      cache.set(cacheKey, data, MEDIAINFO_FAILURE_CACHE_TTL_MS);
     }
     
     res.json(data);
@@ -61,8 +64,8 @@ export default async function mediaInfo(req: Request, res: Response) {
       message: "Internal server error: " + (err instanceof Error ? err.message : String(err)),
     };
     
-    // Cache the error response for a short time to prevent repeated error requests
-    cache.set(cacheKey, errorResponse, 2 * 60 * 1000); // Cache error for 2 minutes
+    // Cache the error response briefly to prevent retry storms.
+    cache.set(cacheKey, errorResponse, MEDIAINFO_FAILURE_CACHE_TTL_MS);
     
     res.status(500).json(errorResponse);
   }
