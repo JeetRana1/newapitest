@@ -120,6 +120,15 @@ async function fetchUpstreamUrl(url: string, headers: Record<string, string>) {
   }
 }
 
+async function fetchUpstreamUrlViaTor(url: string, headers: Record<string, string>) {
+  return await axios.get(url, {
+    headers,
+    httpAgent: torAgent,
+    httpsAgent: torAgent,
+    timeout: 13000
+  });
+}
+
 async function isCachedStreamStillValid(streamUrl: string, refererHint: string): Promise<boolean> {
   try {
     const parsed = new URL(streamUrl);
@@ -273,60 +282,74 @@ export default async function getStream(req: Request, res: Response) {
         const errors: string[] = [];
 
         for (const url of candidateUrls) {
-          let response;
-          try {
-            response = await fetchUpstreamUrl(url, baseHeaders);
-          } catch (err: any) {
-            errors.push(`${url} -> ${err?.message || "failed"}`);
-            continue;
-          }
+          const evaluateCandidateResponse = async (
+            response: any,
+            candidateUrl: string
+          ): Promise<boolean> => {
+            const contentType = String(response?.headers?.["content-type"] || "");
+            const resolved = toAbsoluteStreamUrl(response?.data, baseDomain);
+            if (resolved.startsWith("http")) {
+              finalStreamUrl = resolved;
+              return true;
+            }
 
-          const contentType = String(response?.headers?.["content-type"] || "");
-          const resolved = toAbsoluteStreamUrl(response?.data, baseDomain);
-          if (resolved.startsWith("http")) {
-            finalStreamUrl = resolved;
-            break;
-          }
+            // Some mirrors return manifest content directly at candidate URL.
+            if (isManifestText(response?.data, contentType)) {
+              finalStreamUrl = candidateUrl;
+              return true;
+            }
 
-          // Some mirrors return manifest content directly at candidate URL.
-          if (isManifestText(response?.data, contentType)) {
-            finalStreamUrl = url;
-            break;
-          }
+            // Some mirrors return JSON or raw token without absolute URL.
+            // Try deriving stream URLs if we got a non-http token-like response.
+            if (typeof response?.data === "string") {
+              const body = response.data.trim();
+              if (body && !body.startsWith("{") && !body.includes("<html")) {
+                const bodyClean = body.startsWith("~") ? body.slice(1) : body;
+                const derivedCandidates = [
+                  `${baseDomain}/stream/${encodeURIComponent(bodyClean)}?key=${encodeURIComponent(normalizedKey)}`,
+                  `${baseDomain}/stream2/${encodeURIComponent(bodyClean)}?key=${encodeURIComponent(normalizedKey)}`
+                ];
 
-          // Some mirrors return JSON or raw token without absolute URL.
-          // Try deriving stream URLs if we got a non-http token-like response.
-          if (typeof response?.data === "string") {
-            const body = response.data.trim();
-            if (body && !body.startsWith("{") && !body.includes("<html")) {
-              const bodyClean = body.startsWith("~") ? body.slice(1) : body;
-              const derivedCandidates = [
-                `${baseDomain}/stream/${encodeURIComponent(bodyClean)}?key=${encodeURIComponent(normalizedKey)}`,
-                `${baseDomain}/stream2/${encodeURIComponent(bodyClean)}?key=${encodeURIComponent(normalizedKey)}`
-              ];
-
-              for (const derived of derivedCandidates) {
-                try {
-                  const verifyRes = await fetchUpstreamUrl(derived, baseHeaders);
-                  const verifyContentType = String(verifyRes?.headers?.["content-type"] || "");
-                  const verified = toAbsoluteStreamUrl(verifyRes?.data, baseDomain);
-                  if (verified.startsWith("http")) {
-                    finalStreamUrl = verified;
-                    break;
+                for (const derived of derivedCandidates) {
+                  try {
+                    const verifyRes = await fetchUpstreamUrl(derived, baseHeaders);
+                    const verifyContentType = String(verifyRes?.headers?.["content-type"] || "");
+                    const verified = toAbsoluteStreamUrl(verifyRes?.data, baseDomain);
+                    if (verified.startsWith("http")) {
+                      finalStreamUrl = verified;
+                      return true;
+                    }
+                    if (isManifestText(verifyRes?.data, verifyContentType)) {
+                      finalStreamUrl = derived;
+                      return true;
+                    }
+                  } catch {
+                    // Continue to next candidate.
                   }
-                  if (isManifestText(verifyRes?.data, verifyContentType)) {
-                    finalStreamUrl = derived;
-                    break;
-                  }
-                } catch {
-                  // Continue to next candidate.
                 }
               }
-
-              if (finalStreamUrl) {
-                break;
-              }
             }
+
+            return false;
+          };
+
+          let directRes;
+          try {
+            directRes = await axios.get(url, { headers: baseHeaders, timeout: 9000 });
+            const directOk = await evaluateCandidateResponse(directRes, url);
+            if (directOk) break;
+          } catch (err: any) {
+            errors.push(`${url} -> direct failed: ${err?.message || "failed"}`);
+          }
+
+          // Important: some mirrors return HTTP 200 with empty/blocked body on direct lane.
+          // Always retry invalid candidates over Tor before moving on.
+          try {
+            const torRes = await fetchUpstreamUrlViaTor(url, baseHeaders);
+            const torOk = await evaluateCandidateResponse(torRes, url);
+            if (torOk) break;
+          } catch (err: any) {
+            errors.push(`${url} -> tor failed: ${err?.message || "failed"}`);
           }
 
           errors.push(`${url} -> invalid response`);
