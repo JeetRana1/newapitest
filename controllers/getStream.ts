@@ -9,6 +9,14 @@ const STREAM_CACHE_TTL_MS = 10 * 60 * 1000;
 const STREAM_CACHE_MAX_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const STREAM_CACHE_MIN_SAFE_TTL_MS = 60 * 1000;
 
+function getStreamCacheKey(token: string, key: string, proxyRef: string): string {
+  return `stream_url_${token}_${key}_${proxyRef || "none"}`;
+}
+
+function getTokenOnlyStreamCacheKey(token: string, proxyRef: string): string {
+  return `stream_url_token_${token}_${proxyRef || "none"}`;
+}
+
 function getTtlFromStreamUrl(url: string): number {
   try {
     const parsed = new URL(url);
@@ -240,8 +248,9 @@ export default async function getStream(req: Request, res: Response) {
         }
       }
     } else {
-      const streamCacheKey = `stream_url_${token}_${normalizedKey}_${proxyRef || "none"}`;
-      const cachedStreamUrl = cache.get(streamCacheKey);
+      const streamCacheKey = getStreamCacheKey(token, normalizedKey, proxyRef);
+      const tokenOnlyStreamCacheKey = getTokenOnlyStreamCacheKey(token, proxyRef);
+      const cachedStreamUrl = cache.get(streamCacheKey) || cache.get(tokenOnlyStreamCacheKey);
       let canUseCached = false;
       if (cachedStreamUrl) {
         finalStreamUrl = cachedStreamUrl;
@@ -258,6 +267,7 @@ export default async function getStream(req: Request, res: Response) {
         canUseCached = await isCachedStreamStillValid(finalStreamUrl, refererHint);
         if (!canUseCached) {
           cache.delete(streamCacheKey);
+          cache.delete(tokenOnlyStreamCacheKey);
           finalStreamUrl = "";
         }
       }
@@ -358,8 +368,23 @@ export default async function getStream(req: Request, res: Response) {
         if (typeof finalStreamUrl === "string" && finalStreamUrl.startsWith("http")) {
           const dynamicTtl = getTtlFromStreamUrl(finalStreamUrl);
           cache.set(streamCacheKey, finalStreamUrl, dynamicTtl);
+          cache.set(tokenOnlyStreamCacheKey, finalStreamUrl, dynamicTtl);
         } else {
-          throw new Error(`Unable to resolve stream URL. Tried ${candidateUrls.length} candidates. Last: ${errors[errors.length - 1] || "none"}`);
+          // Upstream can temporarily reject stale file/key pairs. If we have a recent
+          // token-only URL, prefer serving that rather than hard-failing playback.
+          const fallbackUrl = cache.get(tokenOnlyStreamCacheKey);
+          if (typeof fallbackUrl === "string" && fallbackUrl.startsWith("http")) {
+            const stillValid = await isCachedStreamStillValid(fallbackUrl, refererHint);
+            if (stillValid) {
+              finalStreamUrl = fallbackUrl;
+            } else {
+              cache.delete(tokenOnlyStreamCacheKey);
+            }
+          }
+
+          if (!finalStreamUrl) {
+            throw new Error(`Unable to resolve stream URL. Tried ${candidateUrls.length} candidates. Last: ${errors[errors.length - 1] || "none"}`);
+          }
         }
       }
     }
