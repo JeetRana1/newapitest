@@ -15,33 +15,47 @@ export default async function mediaInfo(req: Request, res: Response) {
     });
   }
 
+  const mediaType = (type === 'tv' || type === 'series') ? 'tv' : 'movie';
   // Create cache key for the entire mediaInfo request
-  const cacheKey = `mediaInfo_${id}_${type || 'movie'}`;
+  const cacheKey = `mediaInfo_${id}_${mediaType}`;
   const cachedResult = cache.get(cacheKey);
   if (cachedResult) {
-    console.log(`[mediaInfo] Returning cached result for ID: ${id}`);
-    return res.json(cachedResult);
+    // Do not trust cached imdb failures blindly; mirrors frequently flip imdb support.
+    const isImdbRequest = String(id).startsWith('tt');
+    if ((cachedResult as any)?.success || !isImdbRequest) {
+      console.log(`[mediaInfo] Returning cached result for ID: ${id}`);
+      return res.json(cachedResult);
+    }
+    console.log(`[mediaInfo] Cached imdb failure for ${id}. Trying fresh TMDB fallback before returning cache...`);
   }
 
   try {
-    let finalId = id as string;
+    const requestedId = String(id);
+    const candidates: string[] = [];
 
-    // Auto-resolve TMDB IDs (e.g. 550 -> tt0137523)
-    if (!finalId.startsWith('tt')) {
-      finalId = await resolveTmdbToImdb(finalId, (type as any) || 'movie');
+    // Always include the requested ID first.
+    candidates.push(requestedId);
+
+    if (requestedId.startsWith('tt')) {
+      const tmdbFallbackId = await resolveImdbToTmdb(requestedId, mediaType as any);
+      if (tmdbFallbackId && tmdbFallbackId !== requestedId) {
+        candidates.push(tmdbFallbackId);
+      }
+    } else {
+      const imdbFallbackId = await resolveTmdbToImdb(requestedId, mediaType as any);
+      if (imdbFallbackId && imdbFallbackId !== requestedId) {
+        candidates.push(imdbFallbackId);
+      }
     }
 
-    console.log(`Received request for ID: ${id} (Resolved: ${finalId})`);
-    let data = await getInfo(finalId);
+    const uniqueCandidates = Array.from(new Set(candidates.filter(Boolean)));
+    console.log(`[mediaInfo] ID candidates for ${requestedId}: ${uniqueCandidates.join(" -> ")}`);
 
-    // Upstream providers sometimes stop supporting imdb IDs on /play/*.
-    // If imdb lookup fails, retry once using TMDB numeric ID.
-    if (!data.success && finalId.startsWith('tt')) {
-      const tmdbFallbackId = await resolveImdbToTmdb(finalId, (type as any) || 'movie');
-      if (tmdbFallbackId && tmdbFallbackId !== finalId) {
-        console.log(`[mediaInfo] IMDb lookup failed. Retrying with TMDB ID: ${tmdbFallbackId}`);
-        data = await getInfo(tmdbFallbackId);
-      }
+    let data: any = { success: false, message: "Media not found" };
+    for (const candidate of uniqueCandidates) {
+      console.log(`Received request for ID: ${id} (Trying: ${candidate})`);
+      data = await getInfo(candidate);
+      if (data?.success) break;
     }
 
     console.log(`Response data:`, data);
