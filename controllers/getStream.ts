@@ -1,6 +1,6 @@
 import axios from "axios";
 import { Request, Response } from "express";
-import { getPlayerUrl } from "../lib/getPlayerUrl";
+import { getPlayerUrl, getPlayerUrlWithOptions } from "../lib/getPlayerUrl";
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import cache from "../lib/cache";
 
@@ -113,6 +113,26 @@ function buildCandidateUrls(baseDomain: string, token: string, key: string): str
       return [...paths, ...withKey];
     })
   ));
+}
+
+function extractManifestUrlFromText(text: string, baseDomain: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+
+  // Absolute HLS URL in plain text or embedded JSON.
+  const absMatch = trimmed.match(/https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*/i);
+  if (absMatch?.[0]) return absMatch[0];
+
+  // Relative HLS URL in body.
+  const relMatch = trimmed.match(/(?:^|["'])(\/?[^\s"'<>]+\.m3u8[^\s"'<>]*)/i);
+  if (relMatch?.[1]) {
+    const rel = relMatch[1];
+    if (rel.startsWith("http")) return rel;
+    if (rel.startsWith("/")) return `${baseDomain}${rel}`;
+    return `${baseDomain}/${rel}`;
+  }
+
+  return "";
 }
 
 async function fetchUpstreamUrl(url: string, headers: Record<string, string>) {
@@ -273,25 +293,37 @@ export default async function getStream(req: Request, res: Response) {
       }
 
       if (!canUseCached) {
-        // Resolve token from mirror with multiple path variants.
-        const baseDomain = (proxyRef && proxyRef !== '' ? proxyRef : await getPlayerUrl()).replace(/\/$/, '');
-        refererHint = `${baseDomain}/`;
-        const candidateUrls = buildCandidateUrls(baseDomain, token, normalizedKey);
+        const primaryPlayerUrl = await getPlayerUrl();
+        const refreshedPlayerUrl = await getPlayerUrlWithOptions(true);
+        const baseDomainCandidates = Array.from(new Set([
+          (proxyRef && proxyRef !== '' ? proxyRef : "").replace(/\/$/, ''),
+          String(primaryPlayerUrl || "").trim().replace(/\/$/, ''),
+          String(refreshedPlayerUrl || "").trim().replace(/\/$/, ''),
+          String(process.env.FALLBACK_PLAYER_URL_1 || "").trim().replace(/\/$/, ''),
+          String(process.env.FALLBACK_PLAYER_URL_2 || "").trim().replace(/\/$/, ''),
+          "https://heast404jax.com",
+          "https://vekna402las.com"
+        ].filter(Boolean)));
 
-        console.log(`[getStream] Mirroring from: ${baseDomain}`);
-        const baseHeaders: Record<string, string> = {
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-          "Referer": baseDomain + "/",
-          "Origin": baseDomain,
-          "X-Csrf-Token": normalizedKey,
-          "x-csrf-token": normalizedKey,
-          "X-Requested-With": "XMLHttpRequest",
-          "Accept": "*/*"
-        };
-
+        const refererCandidates = Array.from(new Set([
+          "https://allmovieland.link/",
+          "https://google.com/"
+        ]));
         const errors: string[] = [];
+        let triedCandidates = 0;
 
-        for (const url of candidateUrls) {
+        for (const baseDomain of baseDomainCandidates) {
+          if (finalStreamUrl) break;
+          refererHint = `${baseDomain}/`;
+          const candidateUrls = buildCandidateUrls(baseDomain, token, normalizedKey);
+          triedCandidates += candidateUrls.length;
+          console.log(`[getStream] Mirroring from: ${baseDomain}`);
+
+          const perDomainReferers = Array.from(new Set([
+            `${baseDomain}/`,
+            ...refererCandidates
+          ]));
+
           const evaluateCandidateResponse = async (
             response: any,
             candidateUrl: string
@@ -303,10 +335,31 @@ export default async function getStream(req: Request, res: Response) {
               return true;
             }
 
+            // Some mirrors expose redirect location only.
+            const locationHeader = String(response?.headers?.location || "").trim();
+            if (locationHeader) {
+              const redirectUrl = locationHeader.startsWith("http")
+                ? locationHeader
+                : `${baseDomain}${locationHeader.startsWith("/") ? "" : "/"}${locationHeader}`;
+              if (redirectUrl.startsWith("http")) {
+                finalStreamUrl = redirectUrl;
+                return true;
+              }
+            }
+
             // Some mirrors return manifest content directly at candidate URL.
             if (isManifestText(response?.data, contentType)) {
               finalStreamUrl = candidateUrl;
               return true;
+            }
+
+            // Some responses include an m3u8 URL in plain text/JSON text blob.
+            if (typeof response?.data === "string") {
+              const embeddedUrl = extractManifestUrlFromText(response.data, baseDomain);
+              if (embeddedUrl) {
+                finalStreamUrl = embeddedUrl;
+                return true;
+              }
             }
 
             // Some mirrors return JSON or raw token without absolute URL.
@@ -322,7 +375,14 @@ export default async function getStream(req: Request, res: Response) {
 
                 for (const derived of derivedCandidates) {
                   try {
-                    const verifyRes = await fetchUpstreamUrl(derived, baseHeaders);
+                    const verifyRes = await fetchUpstreamUrl(derived, {
+                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                      "Accept": "*/*",
+                      "Referer": `${baseDomain}/`,
+                      "Origin": baseDomain,
+                      "X-Csrf-Token": normalizedKey,
+                      "x-csrf-token": normalizedKey
+                    });
                     const verifyContentType = String(verifyRes?.headers?.["content-type"] || "");
                     const verified = toAbsoluteStreamUrl(verifyRes?.data, baseDomain);
                     if (verified.startsWith("http")) {
@@ -340,29 +400,85 @@ export default async function getStream(req: Request, res: Response) {
               }
             }
 
+            // Some mirrors return structured JSON with file/path token fields.
+            if (response?.data && typeof response.data === "object") {
+              const obj = response.data as Record<string, unknown>;
+              const nestedToken = [obj.file, obj.path, obj.src, obj.stream].find((v) => typeof v === "string") as string | undefined;
+              if (nestedToken) {
+                const tokenCandidate = String(nestedToken).trim();
+                const normalizedTokenCandidate = tokenCandidate.startsWith("~") ? tokenCandidate.slice(1) : tokenCandidate;
+                const derivedCandidates = [
+                  `${baseDomain}/stream/${encodeURIComponent(normalizedTokenCandidate)}?key=${encodeURIComponent(normalizedKey)}`,
+                  `${baseDomain}/stream2/${encodeURIComponent(normalizedTokenCandidate)}?key=${encodeURIComponent(normalizedKey)}`
+                ];
+                for (const derived of derivedCandidates) {
+                  try {
+                    const verifyRes = await fetchUpstreamUrl(derived, {
+                      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                      "Accept": "*/*",
+                      "Referer": `${baseDomain}/`,
+                      "Origin": baseDomain,
+                      "X-Csrf-Token": normalizedKey,
+                      "x-csrf-token": normalizedKey
+                    });
+                    const verifyContentType = String(verifyRes?.headers?.["content-type"] || "");
+                    const verified = toAbsoluteStreamUrl(verifyRes?.data, baseDomain);
+                    if (verified.startsWith("http")) {
+                      finalStreamUrl = verified;
+                      return true;
+                    }
+                    if (isManifestText(verifyRes?.data, verifyContentType)) {
+                      finalStreamUrl = derived;
+                      return true;
+                    }
+                  } catch {
+                    // Continue trying.
+                  }
+                }
+              }
+            }
+
             return false;
           };
 
-          let directRes;
-          try {
-            directRes = await axios.get(url, { headers: baseHeaders, timeout: 9000 });
-            const directOk = await evaluateCandidateResponse(directRes, url);
-            if (directOk) break;
-          } catch (err: any) {
-            errors.push(`${url} -> direct failed: ${err?.message || "failed"}`);
-          }
+          for (const url of candidateUrls) {
+            if (finalStreamUrl) break;
+            for (const referer of perDomainReferers) {
+              if (finalStreamUrl) break;
+              const origin = referer.replace(/\/$/, '');
+              const headers: Record<string, string> = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Referer": referer,
+                "Origin": origin,
+                "X-Csrf-Token": normalizedKey,
+                "x-csrf-token": normalizedKey,
+                "X-Requested-With": "XMLHttpRequest",
+                "Accept": "*/*"
+              };
 
-          // Important: some mirrors return HTTP 200 with empty/blocked body on direct lane.
-          // Always retry invalid candidates over Tor before moving on.
-          try {
-            const torRes = await fetchUpstreamUrlViaTor(url, baseHeaders);
-            const torOk = await evaluateCandidateResponse(torRes, url);
-            if (torOk) break;
-          } catch (err: any) {
-            errors.push(`${url} -> tor failed: ${err?.message || "failed"}`);
-          }
+              try {
+                const directRes = await axios.get(url, { headers, timeout: 9000 });
+                const directOk = await evaluateCandidateResponse(directRes, url);
+                if (directOk) break;
+              } catch (err: any) {
+                errors.push(`${url} -> direct(${referer}) failed: ${err?.message || "failed"}`);
+              }
 
-          errors.push(`${url} -> invalid response`);
+              // Important: some mirrors return HTTP 200 with empty/blocked body on direct lane.
+              // Always retry invalid candidates over Tor before moving on.
+              try {
+                const torRes = await fetchUpstreamUrlViaTor(url, headers);
+                const torOk = await evaluateCandidateResponse(torRes, url);
+                if (torOk) break;
+              } catch (err: any) {
+                errors.push(`${url} -> tor(${referer}) failed: ${err?.message || "failed"}`);
+              }
+            }
+
+            if (!finalStreamUrl) {
+              errors.push(`${url} -> invalid response`);
+            }
+          }
         }
 
         if (typeof finalStreamUrl === "string" && finalStreamUrl.startsWith("http")) {
@@ -383,7 +499,7 @@ export default async function getStream(req: Request, res: Response) {
           }
 
           if (!finalStreamUrl) {
-            throw new Error(`Unable to resolve stream URL. Tried ${candidateUrls.length} candidates. Last: ${errors[errors.length - 1] || "none"}`);
+            throw new Error(`Unable to resolve stream URL. Tried ${triedCandidates} candidates across ${baseDomainCandidates.length} domains. Last: ${errors[errors.length - 1] || "none"}`);
           }
         }
       }
