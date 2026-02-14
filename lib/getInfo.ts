@@ -20,18 +20,35 @@ export default async function getInfo(id: string) {
         .map((u) => String(u || "").trim().replace(/\/$/, ""))
         .filter(Boolean)
     ));
-    const paths = [`/play/${id}`, `/v/${id}`, `/watch/${id}`];
+    const paths = [
+      `/play/${id}`,
+      `/play/${id}?tr=1`,
+      `/play/${id}?tr=2`,
+      `/v/${id}`,
+      `/watch/${id}`
+    ];
 
     let lastError: any = null;
 
     for (const playerUrl of playerUrlCandidates) {
+      const domainReferers = Array.from(new Set([
+        `${playerUrl.replace(/\/$/, '')}/`,
+        (() => {
+          try {
+            return `${new URL(playerUrl).origin}/`;
+          } catch {
+            return `${playerUrl.replace(/\/$/, '')}/`;
+          }
+        })(),
+        "https://allmovieland.link/",
+        "https://google.com/"
+      ]));
+
       for (const path of paths) {
         const targetUrl = `${playerUrl.replace(/\/$/, '')}${path}`;
         console.log(`[getInfo] Trying path: ${targetUrl}`);
 
-        const referers = ["https://allmovieland.link/", "https://google.com/"];
-
-        for (const referer of referers) {
+        for (const referer of domainReferers) {
           try {
             const requestConfig = {
               headers: {
