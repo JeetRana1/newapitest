@@ -5,6 +5,11 @@ import cache from "../lib/cache";
 
 const MEDIAINFO_SUCCESS_CACHE_TTL_MS = Number(process.env.MEDIAINFO_SUCCESS_CACHE_TTL_MS || 5 * 60 * 1000);
 const MEDIAINFO_FAILURE_CACHE_TTL_MS = Number(process.env.MEDIAINFO_FAILURE_CACHE_TTL_MS || 2 * 60 * 1000);
+const MEDIAINFO_STALE_SUCCESS_CACHE_TTL_MS = Number(process.env.MEDIAINFO_STALE_SUCCESS_CACHE_TTL_MS || 6 * 60 * 60 * 1000);
+
+function getStaleSuccessCacheKey(id: string, mediaType: string) {
+  return `mediaInfo_stale_success_${id}_${mediaType}`;
+}
 
 export default async function mediaInfo(req: Request, res: Response) {
   let { id, type } = req.query;
@@ -63,7 +68,25 @@ export default async function mediaInfo(req: Request, res: Response) {
     // Cache success briefly: upstream file/key tokens are short-lived and become invalid.
     if (data.success) {
       cache.set(cacheKey, data, MEDIAINFO_SUCCESS_CACHE_TTL_MS);
+      const staleKeys = Array.from(new Set([requestedId, ...uniqueCandidates]));
+      staleKeys.forEach((value) => {
+        cache.set(getStaleSuccessCacheKey(value, mediaType), data, MEDIAINFO_STALE_SUCCESS_CACHE_TTL_MS);
+      });
     } else {
+      // If upstream is temporarily failing, serve most recent known-good result.
+      const staleKeys = Array.from(new Set([requestedId, ...uniqueCandidates]));
+      for (const value of staleKeys) {
+        const staleSuccess = cache.get(getStaleSuccessCacheKey(value, mediaType));
+        if ((staleSuccess as any)?.success) {
+          console.log(`[mediaInfo] Upstream failure. Returning stale success for ${value}.`);
+          const staleResponse = {
+            ...(staleSuccess as any),
+            stale: true
+          };
+          cache.set(cacheKey, staleResponse, 45 * 1000);
+          return res.json(staleResponse);
+        }
+      }
       // Cache failed results for shorter duration to allow retries
       cache.set(cacheKey, data, MEDIAINFO_FAILURE_CACHE_TTL_MS);
     }
