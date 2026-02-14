@@ -6,12 +6,18 @@ const PLAYER_URL_TTL_MS = 10 * 60 * 1000;
 let inFlightResolve: Promise<string> | null = null;
 
 export async function getPlayerUrl() {
-  const cachedPlayerUrl = cache.get(PLAYER_URL_CACHE_KEY);
-  if (cachedPlayerUrl) {
-    return cachedPlayerUrl;
+  return getPlayerUrlWithOptions(false);
+}
+
+export async function getPlayerUrlWithOptions(forceRefresh: boolean = false) {
+  if (!forceRefresh) {
+    const cachedPlayerUrl = cache.get(PLAYER_URL_CACHE_KEY);
+    if (cachedPlayerUrl) {
+      return cachedPlayerUrl;
+    }
   }
 
-  if (inFlightResolve) {
+  if (!forceRefresh && inFlightResolve) {
     return inFlightResolve;
   }
 
